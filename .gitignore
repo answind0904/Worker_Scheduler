@@ -1,0 +1,6 @@
+*.csv
+*.xlsx
+*.xls
+*.tsv
+.DS_Store
+Thumbs.db

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>월간 근무표 자동화 앱</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>월간 근무표 자동화 앱</h1>
+        <p id="scheduleSummary">N/D/E/H/M/P 규칙을 적용해 생성하고, 근무 모듈을 드래그해서 조정하세요.</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="secondary-button" id="togglePanelButton" aria-expanded="true">☰ 설정 숨기기</button>
+        <button class="icon-button" id="saveButton" title="저장" aria-label="저장">💾</button>
+        <button class="icon-button" id="printButton" title="인쇄" aria-label="인쇄">🖨</button>
+        <button class="primary-button" id="generateButton">↻ 자동 생성</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="control-panel" aria-label="근무표 설정">
+        <section class="panel-section">
+          <h2>기간</h2>
+          <div class="field-grid">
+            <label>시작일 <input type="date" id="startDateInput"></label>
+            <label>종료일 <input type="date" id="endDateInput"></label>
+            <label>목표 휴무 <input type="number" id="targetOffInput" min="0" max="31"></label>
+            <label>연속근무 제한 <input type="number" id="maxConsecutiveInput" min="3" max="10"></label>
+            <label>섞기 번호 <input type="text" id="shuffleSeedInput" placeholder="자동"></label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <h2>근무 모듈</h2>
+          <div id="rolePalette" class="role-palette"></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title">
+            <h2>공휴일</h2>
+            <button class="icon-button compact" id="addHolidayButton" title="공휴일 추가" aria-label="공휴일 추가">＋</button>
+          </div>
+          <input type="date" id="holidayInput">
+          <div id="holidayList" class="tag-list"></div>
+        </section>
+
+        <section class="panel-section">
+          <h2>검증 기준</h2>
+          <div class="field-grid">
+            <label>N 최소 간격 <input type="number" id="nGapInput" min="2" max="10"></label>
+            <label>평일 가동인원 <input type="number" id="minActiveInput" min="1" max="30"></label>
+            <label>평일 E+S <input type="number" id="minEsInput" min="1" max="30"></label>
+            <label>토/일 D+S <input type="number" id="fridayDsInput" min="1" max="10"></label>
+          </div>
+        </section>
+      </aside>
+
+      <section class="main-panel" aria-label="근무표 작업영역">
+        <div class="table-toolbar">
+          <div class="tabs" role="tablist" aria-label="보기 전환">
+            <button class="tab-button active" id="scheduleTab" role="tab" aria-selected="true">근무표</button>
+            <button class="tab-button" id="staffTab" role="tab" aria-selected="false">직원</button>
+            <button class="tab-button" id="statsTab" role="tab" aria-selected="false">통계</button>
+            <button class="tab-button" id="issuesTab" role="tab" aria-selected="false">검증</button>
+          </div>
+          <div class="toolbar-actions">
+            <div class="mode-toggle" role="group" aria-label="배치 모드">
+              <button class="mode-option" id="forceModeButton" type="button">강제배치</button>
+              <button class="mode-option" id="validateModeButton" type="button">검증배치</button>
+            </div>
+            <button class="secondary-button" id="validateButton">✓ 검증</button>
+            <button class="secondary-button" id="clearButton">⌫ 초기화</button>
+            <button class="secondary-button" id="csvImportButton">⇧ CSV 가져오기</button>
+            <button class="secondary-button" id="csvButton">⇩ CSV 내보내기</button>
+            <input type="file" id="csvFileInput" accept=".csv,text/csv" hidden>
+          </div>
+        </div>
+
+        <div id="notice" class="notice" hidden></div>
+
+        <div id="scheduleView" class="view-pane">
+          <div class="schedule-wrap">
+            <table id="scheduleTable" class="schedule-table"></table>
+          </div>
+        </div>
+
+        <div id="staffView" class="view-pane" hidden>
+          <div class="staff-actions">
+            <button class="primary-button" id="addEmployeeButton">＋ 직원 추가</button>
+          </div>
+          <div class="staff-wrap">
+            <table class="staff-table">
+              <thead>
+                <tr>
+                  <th>이름</th>
+                  <th>그룹</th>
+                  <th>+1</th>
+                  <th>N/W풀</th>
+                  <th>H풀</th>
+                  <th>D풀</th>
+                  <th>P풀</th>
+                  <th>M풀</th>
+                  <th>M대기</th>
+                  <th>D-4</th>
+                  <th>D-3</th>
+                  <th>D-2</th>
+                  <th>D-1</th>
+                  <th>순서</th>
+                </tr>
+              </thead>
+              <tbody id="employeeTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="statsView" class="view-pane" hidden>
+          <div id="statsGrid" class="stats-grid"></div>
+        </div>
+
+        <div id="issuesView" class="view-pane" hidden>
+          <div id="issueList" class="issue-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
