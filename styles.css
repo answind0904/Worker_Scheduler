@@ -381,6 +381,13 @@ button:focus-visible {
   overflow: hidden;
 }
 
+#staffView:not([hidden]) {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
 #statsView,
 #issuesView {
   height: 100%;
@@ -399,7 +406,31 @@ button:focus-visible {
 }
 
 .staff-wrap {
-  padding-bottom: 24px;
+  min-height: 0;
+  padding-bottom: 0;
+  scrollbar-width: none;
+}
+
+.staff-wrap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.staff-horizontal-scroll {
+  height: 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #edf1f4;
+}
+
+.staff-horizontal-scroll[hidden] {
+  display: none;
+}
+
+.staff-horizontal-scroll > div {
+  height: 1px;
 }
 
 table {
@@ -775,6 +806,34 @@ body.paint-active .schedule-cell {
 .staff-table input,
 .staff-table select {
   min-height: 34px;
+}
+
+.past-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.past-clear-button {
+  width: 15px;
+  height: 15px;
+  min-height: 15px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: #dfe6eb;
+  color: #53616b;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.past-clear-button:hover {
+  background: #f4cccc;
+  color: #8f2314;
 }
 
 .check-cell {

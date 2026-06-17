@@ -60,7 +60,7 @@
       "holidayList", "nGapInput", "minActiveInput", "minEsInput", "fridayDsInput", "scheduleTab",
       "staffTab", "statsTab", "issuesTab", "forceModeButton", "validateModeButton", "validateButton", "clearButton", "csvImportButton", "csvButton", "csvFileInput", "notice",
       "scheduleView", "staffView", "statsView", "issuesView", "scheduleTable", "employeeTableBody",
-      "statsGrid", "issueList", "addEmployeeButton"
+      "statsGrid", "issueList", "addEmployeeButton", "staffHorizontalScroll", "staffHorizontalScrollInner"
     ].forEach(id => { el[id] = document.getElementById(id); });
   }
 
@@ -109,6 +109,13 @@
       renderAll();
       saveState();
     });
+    document.querySelectorAll(".past-clear-button").forEach(button => {
+      button.addEventListener("click", event => {
+        const index = Number(event.currentTarget.dataset.pastIndex);
+        clearPastColumn(index);
+      });
+    });
+    bindStaffHorizontalScroll();
 
     ["startDateInput", "endDateInput", "targetOffInput", "maxConsecutiveInput", "shuffleSeedInput", "nGapInput", "minActiveInput", "minEsInput", "fridayDsInput"].forEach(id => {
       el[id].addEventListener("change", () => {
@@ -402,6 +409,62 @@
       tr.appendChild(removeTd);
       el.employeeTableBody.appendChild(tr);
     });
+    syncStaffHorizontalScroll();
+  }
+
+  function bindStaffHorizontalScroll() {
+    const staffWrap = document.querySelector(".staff-wrap");
+    if (!staffWrap || !el.staffHorizontalScroll) return;
+
+    staffWrap.addEventListener("scroll", () => {
+      if (el.staffHorizontalScroll.scrollLeft !== staffWrap.scrollLeft) {
+        el.staffHorizontalScroll.scrollLeft = staffWrap.scrollLeft;
+      }
+    });
+    el.staffHorizontalScroll.addEventListener("scroll", () => {
+      if (staffWrap.scrollLeft !== el.staffHorizontalScroll.scrollLeft) {
+        staffWrap.scrollLeft = el.staffHorizontalScroll.scrollLeft;
+      }
+    });
+    staffWrap.addEventListener("wheel", event => {
+      if (!event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      event.preventDefault();
+      staffWrap.scrollLeft += event.deltaY;
+    }, { passive: false });
+    window.addEventListener("resize", syncStaffHorizontalScroll);
+  }
+
+  function syncStaffHorizontalScroll() {
+    const staffWrap = document.querySelector(".staff-wrap");
+    const table = staffWrap?.querySelector(".staff-table");
+    if (!staffWrap || !table || !el.staffHorizontalScroll || !el.staffHorizontalScrollInner) return;
+
+    el.staffHorizontalScrollInner.style.width = `${table.scrollWidth}px`;
+    el.staffHorizontalScroll.scrollLeft = staffWrap.scrollLeft;
+    el.staffHorizontalScroll.hidden = table.scrollWidth <= staffWrap.clientWidth + 1;
+  }
+
+  function clearPastColumn(index) {
+    if (!Number.isInteger(index) || index < 0 || index > 3) return;
+    const labels = ["D-4", "D-3", "D-2", "D-1"];
+    const hasData = state.employees.some(employee => employee.past?.[index]);
+    if (!hasData) {
+      showNotice(`${labels[index]} 열은 이미 비어 있습니다.`);
+      return;
+    }
+
+    pushHistory(`${labels[index]} 열 비우기`);
+    state.employees.forEach(employee => {
+      employee.past ||= ["", "", "", ""];
+      employee.past[index] = "";
+    });
+    latestIssues = validateSchedule();
+    renderEmployees();
+    renderSchedule();
+    renderStats();
+    renderIssues(latestIssues);
+    saveState();
+    showNotice(`${labels[index]} 열을 공란으로 비웠습니다.`);
   }
 
   function moveEmployee(fromIndex, toIndex) {
@@ -2824,6 +2887,7 @@
     ["scheduleView", "staffView", "statsView", "issuesView"].forEach(id => {
       el[id].hidden = id !== viewId;
     });
+    if (viewId === "staffView") window.requestAnimationFrame(syncStaffHorizontalScroll);
   }
 
   function showNotice(message) {
