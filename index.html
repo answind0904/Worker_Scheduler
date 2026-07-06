@@ -30,7 +30,10 @@
             <label>종료일 <input type="date" id="endDateInput"></label>
             <label>목표 휴무 <input type="number" id="targetOffInput" min="0" max="31"></label>
             <label>연속근무 제한 <input type="number" id="maxConsecutiveInput" min="3" max="10"></label>
-            <label>섞기 번호 <input type="text" id="shuffleSeedInput" placeholder="자동"></label>
+            <div class="field-pair">
+              <label>섞기 번호 <input type="text" id="shuffleSeedInput" placeholder="자동"></label>
+              <label>H보호 <button class="toggle-button" type="button" id="hProtectionToggle" aria-pressed="true">H 보호 활성화</button></label>
+            </div>
           </div>
         </section>
 

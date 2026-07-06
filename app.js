@@ -2,7 +2,7 @@
   const STORAGE_KEY = "monthly-schedule-dnd-v1";
   const CRITICAL_ROLES = ["N", "D", "E", "H", "M1", "M2", "M3", "P"];
   const REST_ROLES = ["X", "R", "A"];
-  const PROTECTED_ROLES = ["X", "P", "D", "H", "A"];
+  const BASE_PROTECTED_ROLES = ["X", "P", "D", "A"];
   const GROUPS = ["일반직", "전문직", "파견직"];
   const MAX_HISTORY = 50;
   const ROLE_MODULES = ["NW", "D", "E", "H", "M1", "M2", "M3", "P", "S", "R", "X", "A", ""];
@@ -56,7 +56,7 @@
   function cacheElements() {
     [
       "scheduleSummary", "togglePanelButton", "saveButton", "printButton", "generateButton", "startDateInput", "endDateInput",
-      "targetOffInput", "maxConsecutiveInput", "shuffleSeedInput", "rolePalette", "holidayInput", "addHolidayButton",
+      "targetOffInput", "maxConsecutiveInput", "shuffleSeedInput", "hProtectionToggle", "rolePalette", "holidayInput", "addHolidayButton",
       "holidayList", "nGapInput", "minActiveInput", "minEsInput", "fridayDsInput", "scheduleTab",
       "staffTab", "statsTab", "issuesTab", "forceModeButton", "validateModeButton", "validateButton", "clearButton", "csvImportButton", "csvButton", "csvFileInput", "notice",
       "scheduleView", "staffView", "statsView", "issuesView", "scheduleTable", "employeeTableBody",
@@ -91,7 +91,8 @@
     el.validateModeButton.addEventListener("click", () => setEditMode("validate"));
     el.validateButton.addEventListener("click", () => validateAndRender({ switchTab: false }));
     el.clearButton.addEventListener("click", () => {
-      if (!confirm("자동 생성된 로테이션만 비울까요?\n수기로 배치한 X/P/D/A/H는 유지됩니다.")) return;
+      const keptRolesText = getProtectedRoles().join("/");
+      if (!confirm(`자동 생성된 로테이션만 비울까요?\n수기로 배치한 ${keptRolesText}는 유지됩니다.`)) return;
       pushHistory("근무표 초기화");
       clearGeneratedScheduleKeepManualProtected();
       markLastChangedCells([]);
@@ -116,6 +117,15 @@
       });
     });
     bindStaffHorizontalScroll();
+    el.hProtectionToggle.addEventListener("click", () => {
+      pushHistory("H 보호 설정 변경");
+      state.config.hProtection = !isHProtectionEnabled();
+      syncHProtectionToggle();
+      latestIssues = validateSchedule();
+      renderSchedule();
+      renderIssues(latestIssues);
+      saveState();
+    });
 
     ["startDateInput", "endDateInput", "targetOffInput", "maxConsecutiveInput", "shuffleSeedInput", "nGapInput", "minActiveInput", "minEsInput", "fridayDsInput"].forEach(id => {
       el[id].addEventListener("change", () => {
@@ -180,7 +190,8 @@
         minActive: 10,
         minEs: 8,
         fridayDs: 3,
-        shuffleSeed: ""
+        shuffleSeed: "",
+        hProtection: true
       },
       employees,
       schedule: {},
@@ -215,6 +226,7 @@
     el.targetOffInput.value = config.targetOffDays;
     el.maxConsecutiveInput.value = config.maxConsecutive;
     el.shuffleSeedInput.value = config.shuffleSeed || "";
+    syncHProtectionToggle();
     el.nGapInput.value = config.nGap;
     el.minActiveInput.value = config.minActive;
     el.minEsInput.value = config.minEs;
@@ -243,6 +255,13 @@
     applyPanelState();
     applyModeState();
     updateSummary();
+  }
+
+  function syncHProtectionToggle() {
+    const enabled = isHProtectionEnabled();
+    el.hProtectionToggle.textContent = enabled ? "H 보호 활성화" : "H 보호 해제";
+    el.hProtectionToggle.setAttribute("aria-pressed", String(enabled));
+    el.hProtectionToggle.title = enabled ? "초기화와 자동생성에서 H 보호 로직을 적용합니다." : "초기화와 자동생성에서 H 보호 로직을 건너뜁니다.";
   }
 
   function applyPanelState() {
@@ -903,6 +922,7 @@
         const gapDiff = daysSinceLastRole(data, employees, b, d, "N") - daysSinceLastRole(data, employees, a, d, "N");
         if (gapDiff !== 0) return gapDiff;
       }
+
       const sameRoleDiff = countEmployeeRole(data, a, role, d) - countEmployeeRole(data, b, role, d);
       if (sameRoleDiff !== 0) return sameRoleDiff;
       const criticalDiff = countCritical(data, a, d) - countCritical(data, b, d);
@@ -1939,16 +1959,18 @@
   function clearGeneratedScheduleKeepManualProtected() {
     const keptSchedule = {};
     const keptManual = {};
-    const keepRoles = new Set(PROTECTED_ROLES);
+    const keepRoles = new Set(getProtectedRoles());
 
     state.employees.forEach(employee => {
       const employeeSchedule = state.schedule[employee.id] || {};
       Object.entries(employeeSchedule).forEach(([date, role]) => {
         const key = keyOf(employee.id, date);
-        if (state.manual[key] && keepRoles.has(role)) {
+        const keepManualRole = state.manual[key] && keepRoles.has(role);
+        const keepProtectedH = role === "H" && isHProtectionEnabled();
+        if (keepManualRole || keepProtectedH) {
           keptSchedule[employee.id] ||= {};
           keptSchedule[employee.id][date] = role;
-          keptManual[key] = true;
+          if (state.manual[key]) keptManual[key] = true;
         }
       });
     });
@@ -2632,6 +2654,7 @@
       ["targetOffDays", state.config.targetOffDays],
       ["maxConsecutive", state.config.maxConsecutive],
       ["shuffleSeed", state.config.shuffleSeed || ""],
+      ["hProtection", isHProtectionEnabled()],
       ["nGap", state.config.nGap],
       ["minActive", state.config.minActive],
       ["minEs", state.config.minEs],
@@ -2779,6 +2802,7 @@
         targetOffDays: clampNumber(configMap.get("targetOffDays"), 0, 31, state.config.targetOffDays),
         maxConsecutive: clampNumber(configMap.get("maxConsecutive"), 3, 10, state.config.maxConsecutive),
         shuffleSeed: configMap.get("shuffleSeed") || "",
+        hProtection: parseBool(configMap.get("hProtection") || "true"),
         nGap: clampNumber(configMap.get("nGap"), 2, 10, state.config.nGap),
         minActive: clampNumber(configMap.get("minActive"), 1, 30, state.config.minActive),
         minEs: clampNumber(configMap.get("minEs"), 1, 30, state.config.minEs),
@@ -2957,7 +2981,16 @@
   }
 
   function isProtectedScheduleCell(employeeId, date, role) {
-    return Boolean(state.manual[keyOf(employeeId, date)] || PROTECTED_ROLES.includes(role));
+    return Boolean(state.manual[keyOf(employeeId, date)] || getProtectedRoles().includes(role));
+  }
+
+
+  function isHProtectionEnabled() {
+    return state.config?.hProtection !== false;
+  }
+
+  function getProtectedRoles() {
+    return isHProtectionEnabled() ? [...BASE_PROTECTED_ROLES, "H"] : BASE_PROTECTED_ROLES;
   }
 
   function isDateInSchedule(date) {
@@ -3273,6 +3306,7 @@
     return ["M1", "M2", "M3"].includes(String(role || "").trim().toUpperCase());
   }
 
+
   function canPrecedeH(role) {
     return !role || ["E", "R", "X", "W", "A", "H"].includes(role);
   }
@@ -3511,6 +3545,7 @@
       if (!parsed?.employees || !parsed?.config) return null;
       parsed.config.holidays ||= [];
       parsed.config.shuffleSeed ||= "";
+      parsed.config.hProtection = parsed.config.hProtection !== false;
       parsed.schedule ||= {};
       parsed.manual ||= {};
       parsed.ui ||= { panelCollapsed: false };
