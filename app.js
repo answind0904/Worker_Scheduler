@@ -191,7 +191,7 @@
         minEs: 8,
         fridayDs: 3,
         shuffleSeed: "",
-        hProtection: true
+        hProtection: false
       },
       employees,
       schedule: {},
@@ -215,6 +215,7 @@
       pPool,
       mPool,
       mStandby,
+      seniorityScore: 0,
       past: ["", "", "", ""]
     };
   }
@@ -385,6 +386,7 @@
       tr.appendChild(checkCell(employee.nwPool, value => { pushHistory("N/W풀 변경"); employee.nwPool = value; latestIssues = validateSchedule(); renderSchedule(); renderIssues(latestIssues); saveState(); }));
       tr.appendChild(checkCell(employee.hPool, value => { pushHistory("H풀 변경"); employee.hPool = value; saveState(); }));
       tr.appendChild(checkCell(employee.dPool, value => { pushHistory("D풀 변경"); employee.dPool = value; saveState(); }));
+      tr.appendChild(numberCell(getSeniorityScore(employee), 0, 9999, value => { pushHistory("연차점수 변경"); employee.seniorityScore = value; saveState(); }));
       tr.appendChild(checkCell(employee.pPool, value => { pushHistory("P풀 변경"); employee.pPool = value; saveState(); }));
       tr.appendChild(checkCell(employee.mPool, value => { pushHistory("M풀 변경"); employee.mPool = value; latestIssues = validateSchedule(); renderSchedule(); renderIssues(latestIssues); saveState(); }));
       tr.appendChild(checkCell(employee.mStandby, value => { pushHistory("M대기 변경"); employee.mStandby = value; latestIssues = validateSchedule(); renderSchedule(); renderIssues(latestIssues); saveState(); }));
@@ -895,6 +897,7 @@
     repairMissingMRoles(data, days, employees);
     relieveMCoreWithStandby(data, days, employees);
     forceExactTargetOff(data, days, employees);
+    prioritizeDBySeniorityScore(data, days, employees);
     writeDataToState(data, days, employees);
     showNotice("자동 생성이 끝났습니다. 검증 탭에서 위반 항목을 확인할 수 있습니다.");
   }
@@ -1388,6 +1391,27 @@
     }
   }
 
+  function prioritizeDBySeniorityScore(data, days, employees) {
+    const pools = getPools();
+    if (!pools.d.length) return;
+    for (let d = 0; d < days.length; d++) {
+      const dateKey = toIsoDate(days[d]);
+      const currentD = data.findIndex(row => row[d] === "D");
+      if (currentD === -1) continue;
+      if (state.manual[keyOf(employees[currentD].id, dateKey)]) continue;
+      const currentScore = getSeniorityScore(employees[currentD]);
+      const seniorCandidate = pools.d
+        .filter(index => index !== currentD)
+        .filter(index => getSeniorityScore(employees[index]) > currentScore)
+        .filter(index => !state.manual[keyOf(employees[index].id, dateKey)])
+        .filter(index => data[index][d] === "S")
+        .filter(index => !wouldViolateConsecutive(data, employees[index], index, d, "D"))
+        .sort((a, b) => getSeniorityScore(employees[b]) - getSeniorityScore(employees[a]))[0];
+      if (seniorCandidate === undefined) continue;
+      data[seniorCandidate][d] = "D";
+      data[currentD][d] = "S";
+    }
+  }
   function countGeneralDs(data, employees, d) {
     let count = 0;
     for (let i = 0; i < employees.length; i++) {
@@ -2667,7 +2691,7 @@
       ...state.config.holidays.sort().map(date => [date]),
       [],
       ["[EMPLOYEES]"],
-      ["id", "name", "group", "plusOne", "nwPool", "hPool", "dPool", "pPool", "mPool", "mStandby", "D-4", "D-3", "D-2", "D-1"],
+      ["id", "name", "group", "plusOne", "nwPool", "hPool", "dPool", "seniorityScore", "pPool", "mPool", "mStandby", "D-4", "D-3", "D-2", "D-1"],
       ...state.employees.map(employee => [
         employee.id,
         employee.name,
@@ -2676,6 +2700,7 @@
         Boolean(employee.nwPool),
         Boolean(employee.hPool),
         Boolean(employee.dPool),
+        getSeniorityScore(employee),
         Boolean(employee.pPool),
         Boolean(employee.mPool),
         Boolean(employee.mStandby),
@@ -2760,6 +2785,7 @@
         nwPool: parseBool(cellByHeader(row, employeeHeader, "nwPool")),
         hPool: parseBool(cellByHeader(row, employeeHeader, "hPool")),
         dPool: parseBool(cellByHeader(row, employeeHeader, "dPool")),
+        seniorityScore: parseSeniorityScore(cellByHeader(row, employeeHeader, "seniorityScore") || cellByHeader(row, employeeHeader, "연차점수")),
         pPool: parseBool(cellByHeader(row, employeeHeader, "pPool")),
         mPool: parseBool(cellByHeader(row, employeeHeader, "mPool")),
         mStandby: parseBool(cellByHeader(row, employeeHeader, "mStandby")),
@@ -2802,7 +2828,7 @@
         targetOffDays: clampNumber(configMap.get("targetOffDays"), 0, 31, state.config.targetOffDays),
         maxConsecutive: clampNumber(configMap.get("maxConsecutive"), 3, 10, state.config.maxConsecutive),
         shuffleSeed: configMap.get("shuffleSeed") || "",
-        hProtection: parseBool(configMap.get("hProtection") || "true"),
+        hProtection: parseBool(configMap.get("hProtection") || "false"),
         nGap: clampNumber(configMap.get("nGap"), 2, 10, state.config.nGap),
         minActive: clampNumber(configMap.get("minActive"), 1, 30, state.config.minActive),
         minEs: clampNumber(configMap.get("minEs"), 1, 30, state.config.minEs),
@@ -2836,6 +2862,7 @@
         nwPool: false,
         hPool: false,
         dPool: false,
+        seniorityScore: 0,
         pPool: false,
         mPool: false,
         mStandby: false,
@@ -2873,6 +2900,22 @@
     return td;
   }
 
+  function numberCell(value, min, max, onChange) {
+    const td = document.createElement("td");
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = "1";
+    input.value = String(value);
+    input.addEventListener("change", () => {
+      const next = clampNumber(input.value, min, max, min);
+      input.value = String(next);
+      onChange(next);
+    });
+    td.appendChild(input);
+    return td;
+  }
   function selectCell(options, value, onChange) {
     const td = document.createElement("td");
     const select = document.createElement("select");
@@ -2986,7 +3029,7 @@
 
 
   function isHProtectionEnabled() {
-    return state.config?.hProtection !== false;
+    return state.config?.hProtection === true;
   }
 
   function getProtectedRoles() {
@@ -2997,6 +3040,13 @@
     return getScheduleDays().some(day => toIsoDate(day) === date);
   }
 
+  function parseSeniorityScore(value) {
+    return clampNumber(value, 0, 9999, 0);
+  }
+
+  function getSeniorityScore(employee) {
+    return parseSeniorityScore(employee?.seniorityScore);
+  }
   function getTargetOff(employee) {
     return state.config.targetOffDays + (employee.plusOne ? 1 : 0);
   }
@@ -3545,7 +3595,7 @@
       if (!parsed?.employees || !parsed?.config) return null;
       parsed.config.holidays ||= [];
       parsed.config.shuffleSeed ||= "";
-      parsed.config.hProtection = parsed.config.hProtection !== false;
+      parsed.config.hProtection = parsed.config.hProtection === true;
       parsed.schedule ||= {};
       parsed.manual ||= {};
       parsed.ui ||= { panelCollapsed: false };
@@ -3556,6 +3606,7 @@
         employee.nwPool = Boolean(employee.nwPool);
         employee.hPool = Boolean(employee.hPool);
         employee.dPool = Boolean(employee.dPool);
+        employee.seniorityScore = parseSeniorityScore(employee.seniorityScore);
         employee.pPool = Boolean(employee.pPool);
         employee.mPool = Boolean(employee.mPool);
         employee.mStandby = Boolean(employee.mStandby);
