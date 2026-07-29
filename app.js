@@ -316,6 +316,7 @@
       });
       chip.addEventListener("dragstart", event => {
         dragPayload = { role, source: "palette" };
+        clearScheduleCrosshair();
         dropCheckCache = new Map();
         event.dataTransfer.setData("text/plain", role);
         event.dataTransfer.setData("application/json", JSON.stringify(dragPayload));
@@ -667,6 +668,7 @@
   function showScheduleCrosshair(row, employeeId, dateKey, activeCell) {
     if (dragPayload) return;
     clearScheduleCrosshair();
+    el.scheduleTable.classList.add("crosshair-active");
 
     const rowCells = Array.from(row.querySelectorAll(".schedule-cell"));
     const columnCells = Array.from(el.scheduleTable.querySelectorAll(`.schedule-cell[data-date="${dateKey}"]`));
@@ -697,6 +699,7 @@
   }
 
   function clearScheduleCrosshair() {
+    el.scheduleTable.classList.remove("crosshair-active");
     activeCrosshairNodes.forEach(node => {
       node.classList.remove(
         "crosshair-row",
@@ -720,6 +723,7 @@
     applyRoleStyle(chip, role);
     chip.addEventListener("dragstart", event => {
       dragPayload = createCellDragPayload(role, employeeId, date);
+      clearScheduleCrosshair();
       dropCheckCache = new Map();
       event.dataTransfer.setData("text/plain", role);
       event.dataTransfer.setData("application/json", JSON.stringify(dragPayload));
@@ -891,7 +895,6 @@
       const day = days[d];
       const redDay = isRedDay(day);
       const sunday = day.getDay() === 0;
-      const weekend = isWeekend(day);
       const monToThu = day.getDay() >= 1 && day.getDay() <= 4;
       const pools = getPools();
 
@@ -917,7 +920,7 @@
       assignMRole(dayContext, "M1");
       assignMRole(dayContext, "M2", redDay);
       assignMRole(dayContext, "M3", !monToThu);
-      assignRole(dayContext, pools.p.length ? pools.p : pools.standard, "P", weekend || hasRoleOnDay(data, d, "P"));
+      assignRole(dayContext, pools.p.length ? pools.p : pools.standard, "P", redDay || hasRoleOnDay(data, d, "P"));
 
       if (redDay) {
         fillRedDay(data, d, employees, assignedByDay[d], restCounts, workCounts, consecutive, day, sunday);
@@ -1945,7 +1948,7 @@
       checkExpectedRole("M1", 1);
       checkExpectedRole("M2", isRedDay(day) ? 0 : 1);
       checkExpectedRole("M3", day.getDay() >= 1 && day.getDay() <= 4 ? 1 : 0);
-      checkExpectedRole("P", isWeekend(day) ? 0 : 1);
+      checkExpectedRole("P", isRedDay(day) ? 0 : 1);
 
       function checkExpectedRole(role, expected) {
         const actual = counts[role] || 0;
@@ -2335,7 +2338,7 @@
     if (isMRole(normalized) && (pools.m.length || pools.mStandby.length) && !employee.mPool && !employee.mStandby) return false;
     if (["M1", "M2", "M3"].includes(normalized) && employee.group === "파견직") return false;
     if (normalized === "H" && day.getDay() === 0) return false;
-    if (normalized === "P" && isWeekend(day)) return false;
+    if (normalized === "P" && isRedDay(day)) return false;
     if (normalized === "M2" && isRedDay(day)) return false;
     if (normalized === "M3" && !(day.getDay() >= 1 && day.getDay() <= 4)) return false;
     return true;

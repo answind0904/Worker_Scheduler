@@ -581,6 +581,10 @@ body.paint-active .schedule-cell {
   color: #276044;
 }
 
+.schedule-table.crosshair-active .schedule-cell:not(.crosshair-row-cell):not(.crosshair-col-cell) .cell-chip {
+  opacity: 0.46;
+}
+
 .schedule-cell.crosshair-row-cell .cell-chip,
 .schedule-cell.crosshair-col-cell .cell-chip {
   /* Keep the role color visible while lightly washing the cell in green. */
