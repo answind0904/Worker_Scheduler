@@ -34,6 +34,7 @@
   let employeeHeadMap = new Map();
   let activeDropPreviewCells = [];
   let activeDropPreviewHeads = [];
+  let activeSwapPreviewChips = [];
   let dragTooltip = null;
   let issueTooltip = null;
   let contextMenu = null;
@@ -2069,7 +2070,7 @@
     }
 
     if (payload.source === "cell" && (payload.employeeId !== targetEmployeeId || payload.date !== targetDate)) {
-      pushHistory(payload.bundle?.kind === "NW" ? "N/W 세트 교환" : "근무 교환");
+      pushHistory(payload.bundle?.kind === "NW" ? "N/W 담당자 교체" : "근무 교환");
       const changedKeys = getBundleSwapKeys(payload, targetEmployeeId, targetDate);
       applyBundleSwap(payload, targetEmployeeId, targetDate);
       markLastChangedCells(changedKeys);
@@ -2096,7 +2097,7 @@
     } else if (getEditMode() === "setup") {
       result = canApplyForceDrop(payload, targetEmployeeId, targetDate);
     } else if (payload.source === "cell") {
-      if (targetDate !== payload.date) {
+      if (payload.bundle?.kind !== "NW" && targetDate !== payload.date) {
         result = { ok: false, reason: "같은 날짜 열에서만 교환할 수 있습니다." };
         dropCheckCache.set(cacheKey, result);
         return result;
@@ -2126,7 +2127,7 @@
 
   function canApplyForceDrop(payload, targetEmployeeId, targetDate) {
     if (payload.source === "cell") {
-      if (targetDate !== payload.date) {
+      if (payload.bundle?.kind !== "NW" && targetDate !== payload.date) {
         return { ok: false, reason: "같은 날짜 안에서만 교환할 수 있습니다." };
       }
       return validateBundleSwap(payload, targetEmployeeId, targetDate, { force: true });
@@ -2193,6 +2194,8 @@
       sourceStartDate: payload.date,
       items: [{ offset: 0, role: payload.role }]
     };
+    if (bundle.kind === "NW") return validateNWBundleSwap(payload, targetEmployeeId, targetDate, options);
+
     const targetStartDate = toIsoDate(addDays(parseIsoDate(targetDate), -bundle.anchorOffset));
     if (!parseIsoDate(targetStartDate)) return { ok: false, reason: "대상 날짜를 확인할 수 없습니다." };
     if (payload.employeeId === targetEmployeeId && bundle.sourceStartDate === targetStartDate) {
@@ -2230,6 +2233,58 @@
     return { ok: true };
   }
 
+  function getNWSetDates(startDate) {
+    const start = parseIsoDate(startDate);
+    if (!start) return [];
+    const dates = [toIsoDate(start), toIsoDate(addDays(start, 1))];
+    return dates.every(isDateInSchedule) ? dates : [];
+  }
+
+  function getNWBundleSwapDates(payload, targetDate) {
+    const sourceStart = payload?.bundle?.sourceStartDate;
+    const sourceDates = getNWSetDates(sourceStart);
+    if (!sourceDates.includes(targetDate)) return [];
+    return sourceDates;
+  }
+
+  function validateNWBundleSwap(payload, targetEmployeeId, targetDate, options = {}) {
+    const sourceStart = payload.bundle?.sourceStartDate;
+    const swapDates = getNWSetDates(sourceStart);
+    if (!sourceStart || !swapDates.length) {
+      return { ok: false, reason: "원본 N/W 세트를 확인할 수 없습니다." };
+    }
+    if (payload.employeeId === targetEmployeeId) {
+      return { ok: false, reason: "N/W는 다른 직원에게만 넘길 수 있습니다." };
+    }
+    if (!swapDates.includes(targetDate)) {
+      return { ok: false, reason: "원본 N/W와 같은 이틀 안에서만 담당자를 교체할 수 있습니다." };
+    }
+
+    const targetRoles = swapDates.map(date => getRole(targetEmployeeId, date));
+    if (targetRoles.some(role => role === "N" || role === "W")) {
+      return { ok: false, reason: "대상 이틀에 기존 N/W가 포함되어 있어 패턴이 깨질 수 있습니다." };
+    }
+
+    const sourceDate = parseIsoDate(sourceStart);
+    const beforeRole = getRole(targetEmployeeId, toIsoDate(addDays(sourceDate, -1)));
+    const afterRole = getRole(targetEmployeeId, toIsoDate(addDays(sourceDate, 2)));
+    if (["N", "W"].includes(beforeRole) || ["N", "W"].includes(afterRole)) {
+      return { ok: false, reason: "대상 이틀의 앞뒤에 N/W가 있어 연속 패턴이 생길 수 있습니다." };
+    }
+
+    for (const date of swapDates) {
+      const sourceRole = getRole(payload.employeeId, date);
+      const targetRole = getRole(targetEmployeeId, date);
+      if (!options.force && !isManualRoleAllowed(targetEmployeeId, date, sourceRole)) {
+        return { ok: false, reason: `${sourceRole || "공란"}은 대상 직원에게 교환 배치할 수 없습니다.` };
+      }
+      if (!options.force && !isManualRoleAllowed(payload.employeeId, date, targetRole)) {
+        return { ok: false, reason: `${targetRole || "공란"}은 원래 직원에게 교환 배치할 수 없습니다.` };
+      }
+    }
+    return { ok: true };
+  }
+
   function applyBundleSwap(payload, targetEmployeeId, targetDate) {
     const bundle = payload.bundle || {
       kind: "single",
@@ -2237,6 +2292,19 @@
       sourceStartDate: payload.date,
       items: [{ offset: 0, role: payload.role }]
     };
+    if (bundle.kind === "NW") {
+      const swapDates = getNWBundleSwapDates(payload, targetDate);
+      const sourceRoles = swapDates.map(date => getRole(payload.employeeId, date));
+      const targetRoles = swapDates.map(date => getRole(targetEmployeeId, date));
+      swapDates.forEach((date, index) => {
+        applyRoleRaw(targetEmployeeId, date, sourceRoles[index]);
+        applyRoleRaw(payload.employeeId, date, targetRoles[index]);
+        state.manual[keyOf(targetEmployeeId, date)] = true;
+        state.manual[keyOf(payload.employeeId, date)] = true;
+      });
+      return;
+    }
+
     const targetStartDate = toIsoDate(addDays(parseIsoDate(targetDate), -bundle.anchorOffset));
     const targetRoles = bundle.items.map(item => {
       const targetMoveDate = toIsoDate(addDays(parseIsoDate(targetStartDate), item.offset));
@@ -2260,6 +2328,11 @@
       sourceStartDate: payload.date,
       items: [{ offset: 0, role: payload.role }]
     };
+    if (bundle.kind === "NW") {
+      return getNWBundleSwapDates(payload, targetDate)
+        .flatMap(date => [keyOf(payload.employeeId, date), keyOf(targetEmployeeId, date)]);
+    }
+
     const targetStartDate = toIsoDate(addDays(parseIsoDate(targetDate), -bundle.anchorOffset));
     const keys = [];
     bundle.items.forEach(item => {
@@ -2421,7 +2494,10 @@
     cells.forEach(cell => cell.classList.add("drop-dimmed"));
 
     const candidateCells = payload.source === "cell"
-      ? cells.filter(cell => cell.dataset.date === payload.date)
+      ? payload.bundle?.kind === "NW"
+        ? cells.filter(cell => cell.dataset.date === payload.bundle.sourceStartDate
+          && cell.dataset.employeeId !== payload.employeeId)
+        : cells.filter(cell => cell.dataset.date === payload.date)
       : cells;
 
     candidateCells.forEach(cell => {
@@ -2433,11 +2509,16 @@
           targetCell.classList.remove("drop-dimmed");
           targetCell.classList.add("drop-candidate");
           markEmployeeHead(targetCell.dataset.employeeId, "drop-candidate-row");
-          targetCell.title = payload.bundle?.kind === "NW" ? (index === 0 ? "N/W 세트 교환 가능" : "함께 이동되는 N/W 셀") : "교환 가능";
+          targetCell.title = payload.bundle?.kind === "NW" ? (index === 0 ? "N/W 담당자 교체 가능" : "함께 바뀌는 다음 날 W") : "교환 가능";
         });
       } else {
-        cell.classList.add("drop-dimmed");
-        cell.title = result.reason;
+        const blockedCells = payload.bundle?.kind === "NW"
+          ? getDropPreviewCells(payload, cell.dataset.employeeId, cell.dataset.date)
+          : [cell];
+        blockedCells.forEach(targetCell => {
+          targetCell.classList.add("drop-dimmed");
+          targetCell.title = `N/W 담당자 교체 불가: ${result.reason}`;
+        });
       }
     });
     markDragSource(payload);
@@ -2448,6 +2529,9 @@
     if (payload.source === "cell") {
       if (payload.employeeId === targetEmployeeId && payload.date === targetDate) {
         return { ok: false, reason: "같은 셀에는 다시 놓을 수 없습니다." };
+      }
+      if (payload.bundle?.kind === "NW") {
+        return validateNWBundleSwap(payload, targetEmployeeId, targetDate, { force: getEditMode() === "setup" });
       }
       if (targetDate !== payload.date) {
         return { ok: false, reason: "같은 날짜 열에서만 교환할 수 있습니다." };
@@ -2460,6 +2544,7 @@
   }
 
   function clearDragHighlights() {
+    clearActiveDropPreview();
     el.scheduleTable.classList.remove("drag-preview");
     el.scheduleTable.querySelectorAll(".schedule-cell").forEach(cell => {
       cell.classList.remove("drop-candidate", "drop-dimmed", "drag-over", "drop-active", "drop-linked", "drag-source");
@@ -2468,8 +2553,6 @@
     el.scheduleTable.querySelectorAll(".employee-head").forEach(head => {
       head.classList.remove("drop-candidate-row", "drop-active-row", "drop-linked-row", "drop-hover-row", "drag-source-row");
     });
-    activeDropPreviewCells = [];
-    activeDropPreviewHeads = [];
   }
 
   function showActiveDropPreview(payload, targetEmployeeId, targetDate) {
@@ -2480,6 +2563,33 @@
     });
     const head = markEmployeeHead(targetEmployeeId, "drop-hover-row");
     if (head) activeDropPreviewHeads.push(head);
+    if (payload?.source === "cell" && payload.bundle?.kind === "NW") {
+      showNWBundleSwapPreview(payload, targetEmployeeId, targetDate);
+    }
+  }
+
+  function showNWBundleSwapPreview(payload, targetEmployeeId, targetDate) {
+    const swapDates = getNWBundleSwapDates(payload, targetDate);
+    if (!swapDates.length) return;
+
+    const sourceRoles = swapDates.map(date => getRole(payload.employeeId, date));
+    const targetRoles = swapDates.map(date => getRole(targetEmployeeId, date));
+    swapDates.forEach((date, index) => {
+      addSwapPreviewChip(findScheduleCell(payload.employeeId, date), targetRoles[index], "swap-preview-source");
+      addSwapPreviewChip(findScheduleCell(targetEmployeeId, date), sourceRoles[index], "swap-preview-target");
+    });
+  }
+
+  function addSwapPreviewChip(cell, role, directionClass) {
+    if (!cell) return;
+    const preview = document.createElement("span");
+    preview.className = `swap-preview-chip ${role ? "" : "empty"}`;
+    preview.textContent = role || "·";
+    preview.setAttribute("aria-hidden", "true");
+    applyRoleStyle(preview, role);
+    cell.classList.add("swap-preview-cell", directionClass);
+    cell.appendChild(preview);
+    activeSwapPreviewChips.push({ cell, preview, directionClass });
   }
 
   function clearActiveDropPreview() {
@@ -2489,8 +2599,13 @@
     activeDropPreviewHeads.forEach(head => {
       head.classList.remove("drop-active-row", "drop-linked-row", "drop-hover-row");
     });
+    activeSwapPreviewChips.forEach(({ cell, preview, directionClass }) => {
+      preview.remove();
+      cell.classList.remove("swap-preview-cell", directionClass);
+    });
     activeDropPreviewCells = [];
     activeDropPreviewHeads = [];
+    activeSwapPreviewChips = [];
   }
 
   function markEmployeeHead(employeeId, className) {
@@ -2505,7 +2620,7 @@
     getSourcePreviewCells(payload).forEach(cell => {
       cell.classList.remove("drop-dimmed", "drop-candidate");
       cell.classList.add("drag-source");
-      cell.title = payload.bundle?.kind === "NW" ? "현재 들고 있는 원본 N/W 세트" : "현재 들고 있는 원본 셀";
+      cell.title = payload.bundle?.kind === "NW" ? "담당자를 바꿀 원본 N/W" : "현재 들고 있는 원본 셀";
     });
     markEmployeeHead(payload.employeeId, "drag-source-row");
   }
@@ -2538,6 +2653,11 @@
       sourceStartDate: payload?.date || targetDate,
       items: [{ offset: 0, role: payload?.role || "" }]
     };
+    if (bundle.kind === "NW") {
+      const targetDates = getNWBundleSwapDates(payload, targetDate);
+      return targetDates.map(date => findScheduleCell(targetEmployeeId, date)).filter(Boolean);
+    }
+
     const targetStartDate = toIsoDate(addDays(parseIsoDate(targetDate), -bundle.anchorOffset));
     const cells = [];
 
