@@ -39,6 +39,7 @@
   let contextMenu = null;
   let isPainting = false;
   let paintHistoryCaptured = false;
+  let activeCrosshairNodes = [];
 
   const el = {};
 
@@ -382,11 +383,11 @@
       });
       tr.appendChild(inputCell(employee.name, value => { pushHistory("직원명 변경"); employee.name = value; renderSchedule(); renderStats(); saveState(); }));
       tr.appendChild(selectCell(GROUPS, employee.group, value => { pushHistory("직원 그룹 변경"); employee.group = value; latestIssues = validateSchedule(); renderSchedule(); renderStats(); renderIssues(latestIssues); saveState(); }));
+      tr.appendChild(numberCell(getSeniorityScore(employee), 0, 9999, value => { pushHistory("연차점수 변경"); employee.seniorityScore = value; saveState(); }));
       tr.appendChild(checkCell(employee.plusOne, value => { pushHistory("+1 변경"); employee.plusOne = value; renderStats(); saveState(); }));
       tr.appendChild(checkCell(employee.nwPool, value => { pushHistory("N/W풀 변경"); employee.nwPool = value; latestIssues = validateSchedule(); renderSchedule(); renderIssues(latestIssues); saveState(); }));
       tr.appendChild(checkCell(employee.hPool, value => { pushHistory("H풀 변경"); employee.hPool = value; saveState(); }));
       tr.appendChild(checkCell(employee.dPool, value => { pushHistory("D풀 변경"); employee.dPool = value; saveState(); }));
-      tr.appendChild(numberCell(getSeniorityScore(employee), 0, 9999, value => { pushHistory("연차점수 변경"); employee.seniorityScore = value; saveState(); }));
       tr.appendChild(checkCell(employee.pPool, value => { pushHistory("P풀 변경"); employee.pPool = value; saveState(); }));
       tr.appendChild(checkCell(employee.mPool, value => { pushHistory("M풀 변경"); employee.mPool = value; latestIssues = validateSchedule(); renderSchedule(); renderIssues(latestIssues); saveState(); }));
       tr.appendChild(checkCell(employee.mStandby, value => { pushHistory("M대기 변경"); employee.mStandby = value; latestIssues = validateSchedule(); renderSchedule(); renderIssues(latestIssues); saveState(); }));
@@ -547,6 +548,7 @@
       const dateKey = toIsoDate(day);
       const th = document.createElement("th");
       th.className = `date-head ${isWeekend(day) ? "weekend" : ""} ${isHoliday(day) ? "holiday" : ""}`;
+      th.dataset.date = dateKey;
       const dateSpan = document.createElement("span");
       dateSpan.className = "date-number";
       dateSpan.textContent = `${day.getMonth() + 1}/${day.getDate()} (${weekdayName(day)})`;
@@ -561,6 +563,8 @@
     const tbody = document.createElement("tbody");
     state.employees.forEach(employee => {
       const row = document.createElement("tr");
+      row.className = "schedule-row";
+      row.dataset.employeeId = employee.id;
       const head = document.createElement("td");
       head.className = "employee-head";
       const name = document.createElement("strong");
@@ -600,6 +604,10 @@
         td.dataset.employeeId = employee.id;
         td.dataset.date = dateKey;
         scheduleCellMap.set(keyOf(employee.id, dateKey), td);
+        td.addEventListener("mouseenter", () => {
+          showScheduleCrosshair(row, employee.id, dateKey, td);
+        });
+        td.addEventListener("mouseleave", clearScheduleCrosshair);
         td.addEventListener("dragover", event => {
           const payload = readDragPayload(event);
           const result = payload ? quickCanPreviewDrop(payload, employee.id, dateKey) : { ok: false, reason: "근무 모듈을 먼저 선택하세요." };
@@ -653,6 +661,53 @@
     });
 
     el.scheduleTable.append(thead, tbody);
+    el.scheduleTable.onmouseleave = clearScheduleCrosshair;
+  }
+
+  function showScheduleCrosshair(row, employeeId, dateKey, activeCell) {
+    if (dragPayload) return;
+    clearScheduleCrosshair();
+
+    const rowCells = Array.from(row.querySelectorAll(".schedule-cell"));
+    const columnCells = Array.from(el.scheduleTable.querySelectorAll(`.schedule-cell[data-date="${dateKey}"]`));
+    const dateHead = el.scheduleTable.querySelector(`.date-head[data-date="${dateKey}"]`);
+    const employeeHead = employeeHeadMap.get(employeeId);
+
+    row.classList.add("crosshair-row");
+    activeCrosshairNodes.push(row);
+
+    rowCells.forEach(node => {
+      node.classList.add("crosshair-row-cell");
+      activeCrosshairNodes.push(node);
+    });
+    columnCells.forEach(node => {
+      node.classList.add("crosshair-col-cell");
+      activeCrosshairNodes.push(node);
+    });
+    if (dateHead) {
+      dateHead.classList.add("crosshair-date-head");
+      activeCrosshairNodes.push(dateHead);
+    }
+    if (employeeHead) {
+      employeeHead.classList.add("crosshair-employee-head");
+      activeCrosshairNodes.push(employeeHead);
+    }
+    activeCell.classList.add("crosshair-active-cell");
+    activeCrosshairNodes.push(activeCell);
+  }
+
+  function clearScheduleCrosshair() {
+    activeCrosshairNodes.forEach(node => {
+      node.classList.remove(
+        "crosshair-row",
+        "crosshair-row-cell",
+        "crosshair-col-cell",
+        "crosshair-date-head",
+        "crosshair-employee-head",
+        "crosshair-active-cell"
+      );
+    });
+    activeCrosshairNodes = [];
   }
 
   function createCellChip(role, employeeId, date) {

@@ -568,6 +568,29 @@ body.paint-active .schedule-cell {
   background: #fffaf7;
 }
 
+.date-head.crosshair-date-head {
+  background: #e6f5eb;
+  color: #276044;
+}
+
+.employee-head.crosshair-employee-head {
+  background: #e6f5eb;
+}
+
+.employee-head.crosshair-employee-head strong {
+  color: #276044;
+}
+
+.schedule-cell.crosshair-row-cell .cell-chip,
+.schedule-cell.crosshair-col-cell .cell-chip {
+  /* Keep the role color visible while lightly washing the cell in green. */
+  box-shadow: inset 0 0 0 999px rgba(70, 175, 106, 0.16);
+}
+
+.schedule-cell.crosshair-active-cell .cell-chip {
+  box-shadow: inset 0 0 0 999px rgba(42, 157, 78, 0.26);
+}
+
 .schedule-cell.drag-over {
   box-shadow: inset 0 0 0 3px #126a75;
 }
