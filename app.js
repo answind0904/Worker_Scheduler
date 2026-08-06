@@ -20,7 +20,7 @@
     SS: { name: "Ss", desc: "출근 비상대기", bg: "#d9eef2", fg: "#165d68" },
     R: { name: "R", desc: "대체휴무", bg: "#f4cccc", fg: "#8f2314" },
     W: { name: "W", desc: "야간후", bg: "#d5a6bd", fg: "#4c1130" },
-    X: { name: "X", desc: "희망휴무", bg: "#f7c7c0", fg: "#8f2314" },
+    X: { name: "X", desc: "희망휴무", bg: "#8f2314", fg: "#f7c7c0" },
     XS: { name: "Xs", desc: "비출근 비상대기", bg: "#e9c8c4", fg: "#7d2921" },
     A: { name: "A", desc: "보호휴무", bg: "#f4cccc", fg: "#8f2314" }
   };
@@ -884,8 +884,10 @@
       for (let i = 0; i < employees.length; i++) {
         const role = getRole(employees[i].id, dateKey);
         const isManual = state.manual[keyOf(employees[i].id, dateKey)];
-        const isProtectedManual = isManual && (!isMRole(role) || isManualRoleAllowed(employees[i].id, dateKey, role));
-        const isProtected = isProtectedManual || (d === 0 && role === "W");
+        const isLinkedXs = role !== "XS" || isLinkedNightStandbyXs(employees[i], days, d);
+        const isProtectedManual = isManual && isLinkedXs && (!isMRole(role) || isManualRoleAllowed(employees[i].id, dateKey, role));
+        const isProtectedRole = BASE_PROTECTED_ROLES.includes(role) || (role === "H" && isHProtectionEnabled());
+        const isProtected = isProtectedRole || isProtectedManual || (d === 0 && role === "W");
         if (role && isProtected) {
           data[i][d] = role;
           assignedByDay[d].add(i);
@@ -924,7 +926,7 @@
       assignRole(dayContext, pools.d.length ? pools.d : pools.standard, "D");
       assignRole(dayContext, getNormalEPool(pools), "E", redDay, "E");
       assignRole(dayContext, pools.dispatch, "E", redDay, "E_DISP");
-      assignRole(dayContext, pools.h.length ? pools.h : pools.standard, "H", sunday);
+      assignRole(dayContext, pools.h.length ? pools.h : pools.standard, "H", isWeekend(day));
       assignMRole(dayContext, "M1");
       assignMRole(dayContext, "M2", redDay);
       assignMRole(dayContext, "M3", !monToThu);
@@ -2138,7 +2140,7 @@
       }
       checkExpectedRole("N", 1);
       checkExpectedRole("D", 1);
-      checkExpectedRole("H", day.getDay() === 0 ? 0 : 1);
+      checkExpectedRole("H", isWeekend(day) ? 0 : 1);
       checkExpectedRole("M1", 1);
       checkExpectedRole("M2", isRedDay(day) ? 0 : 1);
       checkExpectedRole("M3", day.getDay() >= 1 && day.getDay() <= 4 ? 1 : 0);
@@ -2239,7 +2241,7 @@
         const dateKey = toIsoDate(day);
         const role = data[i][d];
         if (role) state.schedule[employee.id][dateKey] = role;
-        if (role && keptManual[keyOf(employee.id, dateKey)]) state.manual[keyOf(employee.id, dateKey)] = true;
+        if (role && role !== "X" && keptManual[keyOf(employee.id, dateKey)]) state.manual[keyOf(employee.id, dateKey)] = true;
       });
     });
   }
@@ -2254,11 +2256,12 @@
       Object.entries(employeeSchedule).forEach(([date, role]) => {
         const key = keyOf(employee.id, date);
         const keepManualRole = state.manual[key] && keepRoles.has(role);
+        const keepIntrinsicX = role === "X";
         const keepProtectedH = role === "H" && isHProtectionEnabled();
-        if (keepManualRole || keepProtectedH) {
+        if (keepIntrinsicX || keepManualRole || keepProtectedH) {
           keptSchedule[employee.id] ||= {};
           keptSchedule[employee.id][date] = role;
-          if (state.manual[key]) keptManual[key] = true;
+          if (role !== "X" && state.manual[key]) keptManual[key] = true;
         }
       });
     });
@@ -2516,8 +2519,8 @@
       swapDates.forEach((date, index) => {
         applyRoleRaw(targetEmployeeId, date, sourceRoles[index]);
         applyRoleRaw(payload.employeeId, date, targetRoles[index]);
-        state.manual[keyOf(targetEmployeeId, date)] = true;
-        state.manual[keyOf(payload.employeeId, date)] = true;
+        updateManualMarker(targetEmployeeId, date, sourceRoles[index]);
+        updateManualMarker(payload.employeeId, date, targetRoles[index]);
       });
       return;
     }
@@ -2533,8 +2536,8 @@
       const targetMoveDate = toIsoDate(addDays(parseIsoDate(targetStartDate), item.offset));
       applyRoleRaw(targetEmployeeId, targetMoveDate, item.role);
       applyRoleRaw(payload.employeeId, sourceDate, targetRoles[index]);
-      state.manual[keyOf(targetEmployeeId, targetMoveDate)] = true;
-      state.manual[keyOf(payload.employeeId, sourceDate)] = true;
+      updateManualMarker(targetEmployeeId, targetMoveDate, item.role);
+      updateManualMarker(payload.employeeId, sourceDate, targetRoles[index]);
     });
   }
 
@@ -2620,7 +2623,7 @@
     if (isMRole(normalized) && (pools.m.length || pools.mStandby.length) && !employee.mPool && !employee.mStandby) return false;
     if (["M1", "M2", "M3"].includes(normalized) && employee.group === "파견직") return false;
     if ((normalized === "XS" || normalized === "SS") && employee.group === "파견직") return false;
-    if (normalized === "H" && day.getDay() === 0) return false;
+    if (normalized === "H" && isWeekend(day)) return false;
     if (normalized === "P" && isRedDay(day)) return false;
     if (normalized === "SS" && isRedDay(day)) return false;
     if (normalized === "M2" && isRedDay(day)) return false;
@@ -3044,7 +3047,7 @@
       const previousRole = getRole(employeeId, target.date);
       applyRoleRaw(employeeId, target.date, target.role);
       const key = keyOf(employeeId, target.date);
-      if (manual) state.manual[key] = true;
+      if (manual) updateManualMarker(employeeId, target.date, target.role);
       if (!target.role) delete state.manual[key];
       changedKeys.push(
         ...getNightWakeHighlightKeys(employeeId, target.date, previousRole),
@@ -3152,7 +3155,7 @@
           ? stateFromBackupCsv(rows)
           : stateFromLegacyScheduleCsv(rows);
         pushHistory("CSV 가져오기");
-        state = importedState;
+        state = migrateStandaloneXs(importedState);
         latestIssues = validateSchedule();
         refreshEmployeeSeed();
         syncInputs();
@@ -3422,6 +3425,13 @@
     else delete state.schedule[employeeId][date];
   }
 
+  function updateManualMarker(employeeId, date, role) {
+    const key = keyOf(employeeId, date);
+    const normalized = String(role || "").trim().toUpperCase();
+    if (normalized && normalized !== "X") state.manual[key] = true;
+    else delete state.manual[key];
+  }
+
   function markLastChangedCells(keys) {
     state.ui ||= {};
     state.ui.lastChangedCells = [...new Set(keys.filter(Boolean))];
@@ -3599,6 +3609,11 @@
     if (d < 0) return d >= -4 ? employee.past?.[4 + d] || "" : "";
     if (d >= days.length) return null;
     return getRole(employee.id, toIsoDate(days[d]));
+  }
+
+  function isLinkedNightStandbyXs(employee, days, d) {
+    return getBoundaryScheduleRole(employee, days, d - 1) === "W"
+      && getBoundaryScheduleRole(employee, days, d - 2) === "N";
   }
 
   function validateNightWakeAlternation(days, issues) {
@@ -4038,6 +4053,49 @@
     employeeSeed = Math.max(100, ...state.employees.map(emp => parseInt(String(emp.id).replace(/\D/g, ""), 10) || 0)) + 1;
   }
 
+  function migrateStandaloneXs(savedState) {
+    const start = parseIsoDate(savedState?.config?.startDate);
+    const end = parseIsoDate(savedState?.config?.endDate);
+    if (!start || !end || end < start) return savedState;
+
+    const totalDays = Math.round((end - start) / 86400000) + 1;
+    savedState.schedule ||= {};
+    savedState.manual ||= {};
+
+    const storedRole = (employee, d) => {
+      if (d < 0) return d >= -4 ? employee.past?.[4 + d] || "" : "";
+      if (d >= totalDays) return "";
+      const dateKey = toIsoDate(addDays(start, d));
+      return savedState.schedule[employee.id]?.[dateKey] || "";
+    };
+
+    savedState.employees.forEach(employee => {
+      const employeeSchedule = savedState.schedule[employee.id];
+      if (!employeeSchedule) return;
+
+      Object.entries(employeeSchedule).forEach(([dateKey, role]) => {
+        if (String(role || "").trim().toUpperCase() !== "XS") return;
+        const date = parseIsoDate(dateKey);
+        if (!date) return;
+        const d = Math.round((date - start) / 86400000);
+        if (d < 0 || d >= totalDays) return;
+        if (storedRole(employee, d - 1) === "W" && storedRole(employee, d - 2) === "N") return;
+
+        employeeSchedule[dateKey] = "R";
+        delete savedState.manual[keyOf(employee.id, dateKey)];
+      });
+    });
+
+    Object.keys(savedState.manual).forEach(key => {
+      const [employeeId, dateKey] = key.split("|");
+      if (String(savedState.schedule[employeeId]?.[dateKey] || "").trim().toUpperCase() === "X") {
+        delete savedState.manual[key];
+      }
+    });
+
+    return savedState;
+  }
+
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -4062,7 +4120,7 @@
         employee.mPool = Boolean(employee.mPool);
         employee.mStandby = Boolean(employee.mStandby);
       });
-      return parsed;
+      return migrateStandaloneXs(parsed);
     } catch {
       return null;
     }
