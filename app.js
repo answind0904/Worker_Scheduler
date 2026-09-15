@@ -6,7 +6,7 @@
   const MANUAL_PROTECTED_ROLES = [...BASE_PROTECTED_ROLES, "XS", "SS"];
   const GROUPS = ["일반직", "전문직", "파견직"];
   const MAX_HISTORY = 50;
-  const ROLE_MODULES = ["NW", "D", "E", "H", "M1", "M2", "M3", "P", "S", "SS", "R", "X", "A", ""];
+  const ROLE_MODULES = ["NW", "D", "E", "H", "M1", "M2", "M3", "P", "S", "XS", "SS", "R", "X", "A", ""];
   const ROLE_DEFS = {
     N: { name: "N", desc: "숙직", bg: "#d5a6bd", fg: "#4c1130" },
     D: { name: "D", desc: "데스크", bg: "#d0e0e3", fg: "#134f5c" },
@@ -285,7 +285,7 @@
     el.validateModeButton.classList.toggle("active", !forceMode);
     el.forceModeButton.setAttribute("aria-pressed", String(forceMode));
     el.validateModeButton.setAttribute("aria-pressed", String(!forceMode));
-    el.forceModeButton.title = "검증 위반 여부와 관계없이 인위적으로 배치합니다. N/W/Xs 3일 세트 보호만 유지됩니다.";
+    el.forceModeButton.title = "검증 위반 여부와 관계없이 인위적으로 배치합니다. N/W 2일 세트 보호만 유지됩니다.";
     el.validateModeButton.title = "새 검증 문제가 생기는 배치는 제한됩니다.";
   }
 
@@ -311,7 +311,7 @@
       chip.draggable = true;
       chip.dataset.role = role;
       chip.textContent = role ? getRoleLabel(role) : "비우기";
-      chip.title = role === "NW" ? "N/W/Xs 3일 세트 배치" : (role ? `${getRoleLabel(role)} ${ROLE_DEFS[role].desc}` : "셀 비우기");
+      chip.title = role === "NW" ? "N/W 2일 세트 배치" : (role ? `${getRoleLabel(role)} ${ROLE_DEFS[role].desc}` : "셀 비우기");
       applyRoleStyle(chip, styleRole);
       chip.addEventListener("click", () => {
         selectedRole = selectedRole === role ? null : role;
@@ -884,8 +884,7 @@
       for (let i = 0; i < employees.length; i++) {
         const role = getRole(employees[i].id, dateKey);
         const isManual = state.manual[keyOf(employees[i].id, dateKey)];
-        const isLinkedXs = role !== "XS" || isLinkedNightStandbyXs(employees[i], days, d);
-        const isProtectedManual = isManual && isLinkedXs && (!isMRole(role) || isManualRoleAllowed(employees[i].id, dateKey, role));
+        const isProtectedManual = isManual && (!isMRole(role) || isManualRoleAllowed(employees[i].id, dateKey, role));
         const isProtectedRole = BASE_PROTECTED_ROLES.includes(role) || (role === "H" && isHProtectionEnabled());
         const isProtected = isProtectedRole || isProtectedManual || (d === 0 && role === "W");
         if (role && isProtected) {
@@ -898,7 +897,7 @@
     }
 
     const nightContext = { data, days, employees, assignedByDay, restCounts, workCounts, consecutive, pointers };
-    applyPastNightStandbyContinuations(nightContext);
+    applyPastNightWakeContinuation(nightContext);
     generateNightSchedule(nightContext, getNightPool());
 
     for (let d = 0; d < days.length; d++) {
@@ -915,7 +914,7 @@
           data[i][d] = "W";
           assignedByDay[d].add(i);
         } else if (prev === "W") {
-          data[i][d] = "XS";
+          data[i][d] = "R";
           assignedByDay[d].add(i);
           restCounts[i]++;
         }
@@ -1032,30 +1031,26 @@
     for (let i = 0; i < employees.length; i++) {
       if (assigned.has(i)) continue;
       if (data[i][d - 1] !== "W") continue;
-      data[i][d] = "XS";
+      data[i][d] = "R";
       assigned.add(i);
       restCounts[i]++;
     }
   }
 
-  function applyPastNightStandbyContinuations(ctx) {
-    const { data, days, employees } = ctx;
+  function applyPastNightWakeContinuation(ctx) {
+    const { days, employees } = ctx;
     if (!days.length) return;
 
     employees.forEach((employee, index) => {
       const past = employee.past || ["", "", "", ""];
       if (past[3] === "N") {
-        if (reserveNightBundleRole(ctx, index, 0, "W")) {
-          reserveNightBundleRole(ctx, index, 1, "XS");
-        }
-      } else if (past[2] === "N" && past[3] === "W") {
-        reserveNightBundleRole(ctx, index, 0, "XS");
+        reserveNightWakeRole(ctx, index, 0, "W");
       }
     });
   }
 
-  function reserveNightBundleRole(ctx, index, d, role) {
-    const { data, days, employees, assignedByDay, restCounts } = ctx;
+  function reserveNightWakeRole(ctx, index, d, role) {
+    const { data, days, employees, assignedByDay } = ctx;
     if (d < 0 || d >= days.length) return true;
     const currentRole = data[index][d];
     if (currentRole === role) return true;
@@ -1064,7 +1059,6 @@
 
     data[index][d] = role;
     assignedByDay[d].add(index);
-    if (role === "XS") restCounts[index]++;
     return true;
   }
 
@@ -1144,21 +1138,17 @@
     if (pattern && phase.avoidSamePattern && countWeekendNWPattern(data, days, index, d, pattern) > 0) return false;
     if (pattern && phase.avoidRecent && countRecentWeekendNW(data, days, index, d, 8) > 0) return false;
 
-    return canReserveNightBundleTail(ctx, index, d);
+    return canReserveNightWake(ctx, index, d);
   }
 
-  function canReserveNightBundleTail(ctx, index, d) {
+  function canReserveNightWake(ctx, index, d) {
     const { data, days, employees, assignedByDay } = ctx;
-    const expectedRoles = ["W", "XS"];
-    for (let offset = 1; offset <= 2; offset++) {
-      const targetDay = d + offset;
-      if (targetDay >= days.length) continue;
-      const expectedRole = expectedRoles[offset - 1];
-      const currentRole = data[index][targetDay];
-      if (currentRole === expectedRole) continue;
-      if (currentRole || assignedByDay[targetDay].has(index)) return false;
-      if (isProtectedScheduleCell(employees[index].id, toIsoDate(days[targetDay]), currentRole)) return false;
-    }
+    const targetDay = d + 1;
+    if (targetDay >= days.length) return true;
+    const currentRole = data[index][targetDay];
+    if (currentRole === "W") return true;
+    if (currentRole || assignedByDay[targetDay].has(index)) return false;
+    if (isProtectedScheduleCell(employees[index].id, toIsoDate(days[targetDay]), currentRole)) return false;
     return true;
   }
 
@@ -1188,20 +1178,18 @@
     const pos = nightPool.indexOf(index);
     if (pos !== -1) pointers.N = (pos + 1) % nightPool.length;
 
-    reserveNightBundleRole(ctx, index, d + 1, "W");
-    reserveNightBundleRole(ctx, index, d + 2, "XS");
+    reserveNightWakeRole(ctx, index, d + 1, "W");
   }
 
   function ensureWakeAfterExistingNight(ctx, d) {
     const { data } = ctx;
     const nightIndex = data.findIndex(row => row[d] === "N");
     if (nightIndex === -1) return;
-    if (!reserveNightBundleRole(ctx, nightIndex, d + 1, "W")) return;
-    reserveNightBundleRole(ctx, nightIndex, d + 2, "XS");
+    reserveNightWakeRole(ctx, nightIndex, d + 1, "W");
   }
 
   function repairWeekendNWRepeats(ctx, standardPool) {
-    const { data, days, employees, assignedByDay, restCounts, workCounts } = ctx;
+    const { data, days, employees, assignedByDay, workCounts } = ctx;
     const standard = standardPool.length ? standardPool : employees.map((_, index) => index);
     const patternOwners = new Map();
 
@@ -1242,28 +1230,24 @@
     }
 
     function moveNightPair(context, sourceIndex, targetIndex, d) {
-      const clearedStandby = temporarilyClearNightPair(context, sourceIndex, d);
+      temporarilyClearNightPair(context, sourceIndex, d);
       workCounts[sourceIndex] = Math.max(0, workCounts[sourceIndex] - 1);
-      if (clearedStandby) restCounts[sourceIndex] = Math.max(0, restCounts[sourceIndex] - 1);
       assignNightPair(context, targetIndex, d);
     }
 
     function temporarilyClearNightPair(context, sourceIndex, d) {
-      let clearedStandby = false;
-      const roles = ["N", "W", "XS"];
+      const roles = ["N", "W"];
       for (let offset = 0; offset < roles.length; offset++) {
         const targetDay = d + offset;
         if (targetDay >= days.length || data[sourceIndex][targetDay] !== roles[offset]) continue;
         if (isProtectedScheduleCell(employees[sourceIndex].id, toIsoDate(days[targetDay]), roles[offset])) continue;
         data[sourceIndex][targetDay] = "";
         assignedByDay[targetDay].delete(sourceIndex);
-        if (roles[offset] === "XS") clearedStandby = true;
       }
-      return clearedStandby;
     }
 
     function restoreNightPair(context, sourceIndex, d) {
-      const roles = ["N", "W", "XS"];
+      const roles = ["N", "W"];
       for (let offset = 0; offset < roles.length; offset++) {
         const targetDay = d + offset;
         if (targetDay >= days.length || data[sourceIndex][targetDay]) continue;
@@ -1274,7 +1258,7 @@
   }
 
   function isNightBundleProtected(employee, row, days, d) {
-    const roles = ["N", "W", "XS"];
+    const roles = ["N", "W"];
     return roles.some((role, offset) => {
       const targetDay = d + offset;
       return targetDay < days.length
@@ -1284,7 +1268,7 @@
   }
 
   function repairNightWakeAlternations(ctx, standardPool) {
-    const { data, days, employees, assignedByDay, restCounts, workCounts } = ctx;
+    const { data, days, employees, assignedByDay, workCounts } = ctx;
     const standard = standardPool.length ? standardPool : employees.map((_, index) => index);
     const allEmployees = getPools().nw.length ? standard : employees.map((_, index) => index);
     let changed = true;
@@ -1304,9 +1288,8 @@
           const replacement = findNightRepairReplacement(sourceIndex, conflictDay);
           if (replacement === null) continue;
 
-          const clearedStandby = temporarilyClearNightPair(sourceIndex, conflictDay);
+          temporarilyClearNightPair(sourceIndex, conflictDay);
           workCounts[sourceIndex] = Math.max(0, workCounts[sourceIndex] - 1);
-          if (clearedStandby) restCounts[sourceIndex] = Math.max(0, restCounts[sourceIndex] - 1);
           assignNightPair(ctx, replacement, conflictDay);
           changed = true;
           break;
@@ -1338,17 +1321,14 @@
     }
 
     function temporarilyClearNightPair(sourceIndex, d) {
-      let clearedStandby = false;
-      const roles = ["N", "W", "XS"];
+      const roles = ["N", "W"];
       for (let offset = 0; offset < roles.length; offset++) {
         const targetDay = d + offset;
         if (targetDay >= days.length || data[sourceIndex][targetDay] !== roles[offset]) continue;
         if (isProtectedScheduleCell(employees[sourceIndex].id, toIsoDate(days[targetDay]), roles[offset])) continue;
         data[sourceIndex][targetDay] = "";
         assignedByDay[targetDay].delete(sourceIndex);
-        if (roles[offset] === "XS") clearedStandby = true;
       }
-      return clearedStandby;
     }
   }
 
@@ -1410,9 +1390,9 @@
       return pool
         .filter(index => employees[index].group !== "파견직")
         .filter(index => getPools().nw.length ? employees[index].nwPool : true)
-        .filter(index => !["N", "W", "XS"].includes(data[index][d]))
+        .filter(index => !["N", "W"].includes(data[index][d]))
         .filter(index => !isProtectedScheduleCell(employees[index].id, dateKey, data[index][d]))
-        .filter(index => canReserveNightBundleTail(ctx, index, d))
+        .filter(index => canReserveNightWake(ctx, index, d))
         .filter(index => !options.avoidAssigned || !assigned.has(index))
         .filter(index => !options.avoidNightWakeWindow || !hasRecentNightWakePair(data, employees, index, d, 3))
         .filter(index => !options.avoidNightWakeWindow || !hasFutureNightWakePair(data, index, d, 3))
@@ -1524,6 +1504,16 @@
   function assignFinalStandbyRoles(data, days, employees) {
     const plans = [
       {
+        role: "XS",
+        sourceRole: "R",
+        shares: null,
+        appliesToDay: () => true,
+        allowRepair: false,
+        employeeWeight: 55,
+        nearbyWeight: 25,
+        noiseWeight: 100
+      },
+      {
         role: "SS",
         sourceRole: "S",
         shares: { "일반직": 2 / 3, "전문직": 1 / 3 },
@@ -1547,7 +1537,7 @@
         if (!plan.appliesToDay(days[d]) || hasRoleOnDay(data, d, plan.role)) continue;
 
         let candidates = getDirectStandbyCandidates(data, days, employees, d, plan);
-        if (!candidates.length) {
+        if (!candidates.length && plan.allowRepair !== false) {
           candidates = getStandbyRepairCandidates(data, days, employees, d, plan);
         }
         if (!candidates.length) continue;
@@ -1633,16 +1623,18 @@
       "전문직": groupCounts["전문직"] + (group === "전문직" ? 1 : 0)
     };
     const projectedTotal = projectedCounts["일반직"] + projectedCounts["전문직"];
-    const ratioError = Math.abs(projectedCounts["일반직"] - projectedTotal * plan.shares["일반직"])
-      + Math.abs(projectedCounts["전문직"] - projectedTotal * plan.shares["전문직"]);
+    const ratioError = plan.shares
+      ? Math.abs(projectedCounts["일반직"] - projectedTotal * plan.shares["일반직"])
+        + Math.abs(projectedCounts["전문직"] - projectedTotal * plan.shares["전문직"])
+      : 0;
     const nearbyAssignments = countNearbyRole(data, candidate.index, d, plan.role, 3);
     const noise = seededNoise(`${getScheduleSeed()}|${plan.role}|${employees[candidate.index].id}|${toIsoDate(days[d])}`);
 
-    return employeeCounts[candidate.index] * 110
+    return employeeCounts[candidate.index] * (plan.employeeWeight ?? 110)
       + ratioError * 150
-      + nearbyAssignments * 45
+      + nearbyAssignments * (plan.nearbyWeight ?? 45)
       + candidate.repairCost
-      + noise * 8;
+      + noise * (plan.noiseWeight ?? 8);
   }
 
   function countNearbyRole(data, employeeIndex, d, role, distance) {
@@ -2181,10 +2173,10 @@
       days.forEach((day, d) => {
         const dateKey = toIsoDate(day);
         const role = getRole(employee.id, dateKey);
-        if (["N", "W", "XS"].includes(role) && pools.nw.length && !employee.nwPool) {
-          issues.push({ title: "N/W/Xs풀 위반", message: `${employee.name} ${dateKey}: N/W풀에 체크되지 않은 인원입니다.`, empId: employee.id, date: dateKey });
-        } else if (["N", "W", "XS"].includes(role) && employee.group === "파견직") {
-          issues.push({ title: "N/W/Xs풀 위반", message: `${employee.name} ${dateKey}: 파견직은 N/W/Xs 후보가 아닙니다.`, empId: employee.id, date: dateKey });
+        if (["N", "W"].includes(role) && pools.nw.length && !employee.nwPool) {
+          issues.push({ title: "N/W풀 위반", message: `${employee.name} ${dateKey}: N/W풀에 체크되지 않은 인원입니다.`, empId: employee.id, date: dateKey });
+        } else if (["N", "W"].includes(role) && employee.group === "파견직") {
+          issues.push({ title: "N/W풀 위반", message: `${employee.name} ${dateKey}: 파견직은 N/W 후보가 아닙니다.`, empId: employee.id, date: dateKey });
         }
         if (role === "H") {
           if (pools.h.length && !employee.hPool) {
@@ -2202,7 +2194,7 @@
             issues.push({ title: "M풀 위반", message: `${employee.name} ${dateKey}: M풀이 비어 있을 때 파견직은 M 후보가 아닙니다.`, empId: employee.id, date: dateKey });
           }
         }
-        if (role === "SS" && employee.group === "파견직") {
+        if (["XS", "SS"].includes(role) && employee.group === "파견직") {
           issues.push({ title: `${getRoleLabel(role)} 대상 위반`, message: `${employee.name} ${dateKey}: 파견직은 ${getRoleLabel(role)} 대상이 아닙니다.`, empId: employee.id, date: dateKey });
         }
         if (role === "SS" && isRedDay(day)) {
@@ -2224,7 +2216,7 @@
       });
     });
 
-    validateNightStandbySequences(days, issues);
+    validateNightWakeSequences(days, issues);
     validateNightWakeAlternation(days, issues);
     validateWeekendNWPatterns(days, issues);
 
@@ -2278,7 +2270,7 @@
     }
 
     if (payload.source === "cell" && (payload.employeeId !== targetEmployeeId || payload.date !== targetDate)) {
-      pushHistory(payload.bundle?.kind === "NW" ? "N/W/Xs 담당자 교체" : "근무 교환");
+      pushHistory(payload.bundle?.kind === "NW" ? "N/W 담당자 교체" : "근무 교환");
       const changedKeys = getBundleSwapKeys(payload, targetEmployeeId, targetDate);
       applyBundleSwap(payload, targetEmployeeId, targetDate);
       markLastChangedCells(changedKeys);
@@ -2358,14 +2350,14 @@
         date,
         bundle: {
           kind: "NW",
-          anchorOffset: normalized === "N" ? 0 : normalized === "W" ? 1 : 2,
+          anchorOffset: normalized === "N" ? 0 : 1,
           sourceStartDate,
-          items: [{ offset: 0, role: "N" }, { offset: 1, role: "W" }, { offset: 2, role: "XS" }]
+          items: [{ offset: 0, role: "N" }, { offset: 1, role: "W" }]
         }
       };
     }
 
-    if (["N", "W", "XS"].includes(normalized)) {
+    if (["N", "W"].includes(normalized)) {
       return {
         role: normalized,
         source: "cell",
@@ -2396,12 +2388,12 @@
 
   function getLinkedNightStandbyStart(employeeId, date, role = getRole(employeeId, date)) {
     const parsedDate = parseIsoDate(date);
-    if (!parsedDate || !["N", "W", "XS"].includes(role)) return "";
-    const start = addDays(parsedDate, role === "N" ? 0 : role === "W" ? -1 : -2);
-    const dates = [0, 1, 2].map(offset => toIsoDate(addDays(start, offset)));
+    if (!parsedDate || !["N", "W"].includes(role)) return "";
+    const start = addDays(parsedDate, role === "N" ? 0 : -1);
+    const dates = [0, 1].map(offset => toIsoDate(addDays(start, offset)));
     if (!dates.every(isDateInSchedule)) return "";
     const roles = dates.map(item => getRole(employeeId, item));
-    return roles.join("|") === "N|W|XS" ? dates[0] : "";
+    return roles.join("|") === "N|W" ? dates[0] : "";
   }
 
   function validateBundleSwap(payload, targetEmployeeId, targetDate, options = {}) {
@@ -2412,7 +2404,7 @@
       items: [{ offset: 0, role: payload.role }]
     };
     if (bundle.kind === "NW_BOUNDARY") {
-      return { ok: false, reason: "월 경계의 N/W/Xs는 3일 전체가 보이는 달에서 세트로 교환해 주세요." };
+      return { ok: false, reason: "월 경계의 N/W는 이틀 전체가 보이는 달에서 세트로 교환해 주세요." };
     }
     if (bundle.kind === "NW") return validateNWBundleSwap(payload, targetEmployeeId, targetDate, options);
 
@@ -2428,11 +2420,11 @@
       const sourceDate = toIsoDate(addDays(parseIsoDate(bundle.sourceStartDate), item.offset));
       const targetMoveDate = toIsoDate(addDays(parseIsoDate(targetStartDate), item.offset));
       if (!isDateInSchedule(sourceDate) || !isDateInSchedule(targetMoveDate)) {
-        return { ok: false, reason: bundle.kind === "NW" ? "N/W/Xs 세트가 기간 밖으로 벗어납니다." : "기간 밖 날짜입니다." };
+        return { ok: false, reason: bundle.kind === "NW" ? "N/W 세트가 기간 밖으로 벗어납니다." : "기간 밖 날짜입니다." };
       }
       const targetRole = getRole(targetEmployeeId, targetMoveDate);
       if (bundle.kind !== "NW" && isPairedNWCell(targetEmployeeId, targetMoveDate, targetRole)) {
-        return { ok: false, reason: "N/W/Xs 세트는 묶음으로만 교환할 수 있습니다." };
+        return { ok: false, reason: "N/W 세트는 묶음으로만 교환할 수 있습니다." };
       }
       if (!options.force && !isManualRoleAllowed(targetEmployeeId, targetMoveDate, item.role)) {
         return { ok: false, reason: `${item.role || "공란"}은 대상 직원에게 배치할 수 없습니다.` };
@@ -2446,7 +2438,7 @@
 
     if (payload.employeeId === targetEmployeeId) {
       for (const key of sourceKeys) {
-        if (targetKeys.has(key)) return { ok: false, reason: "겹치는 N/W/Xs 세트는 교환할 수 없습니다." };
+        if (targetKeys.has(key)) return { ok: false, reason: "겹치는 N/W 세트는 교환할 수 없습니다." };
       }
     }
 
@@ -2456,7 +2448,7 @@
   function getNWSetDates(startDate) {
     const start = parseIsoDate(startDate);
     if (!start) return [];
-    const dates = [0, 1, 2].map(offset => toIsoDate(addDays(start, offset)));
+    const dates = [0, 1].map(offset => toIsoDate(addDays(start, offset)));
     return dates.every(isDateInSchedule) ? dates : [];
   }
 
@@ -2471,25 +2463,25 @@
     const sourceStart = payload.bundle?.sourceStartDate;
     const swapDates = getNWSetDates(sourceStart);
     if (!sourceStart || !swapDates.length) {
-      return { ok: false, reason: "원본 N/W/Xs 세트를 확인할 수 없습니다." };
+      return { ok: false, reason: "원본 N/W 세트를 확인할 수 없습니다." };
     }
     if (payload.employeeId === targetEmployeeId) {
-      return { ok: false, reason: "N/W/Xs는 다른 직원에게만 넘길 수 있습니다." };
+      return { ok: false, reason: "N/W는 다른 직원에게만 넘길 수 있습니다." };
     }
     if (!swapDates.includes(targetDate)) {
-      return { ok: false, reason: "원본 N/W/Xs와 같은 3일 안에서만 담당자를 교체할 수 있습니다." };
+      return { ok: false, reason: "원본 N/W와 같은 이틀 안에서만 담당자를 교체할 수 있습니다." };
     }
 
     const targetRoles = swapDates.map(date => getRole(targetEmployeeId, date));
-    if (targetRoles.some(role => ["N", "W", "XS"].includes(role))) {
-      return { ok: false, reason: "대상 3일에 기존 N/W/Xs가 포함되어 있어 패턴이 깨질 수 있습니다." };
+    if (targetRoles.some(role => ["N", "W"].includes(role))) {
+      return { ok: false, reason: "대상 이틀에 기존 N/W가 포함되어 있어 패턴이 깨질 수 있습니다." };
     }
 
     const sourceDate = parseIsoDate(sourceStart);
     const beforeRole = getRole(targetEmployeeId, toIsoDate(addDays(sourceDate, -1)));
-    const afterRole = getRole(targetEmployeeId, toIsoDate(addDays(sourceDate, 3)));
-    if (["N", "W", "XS"].includes(beforeRole) || ["N", "W", "XS"].includes(afterRole)) {
-      return { ok: false, reason: "대상 3일의 앞뒤에 N/W/Xs가 있어 연속 패턴이 생길 수 있습니다." };
+    const afterRole = getRole(targetEmployeeId, toIsoDate(addDays(sourceDate, 2)));
+    if (["N", "W"].includes(beforeRole) || ["N", "W"].includes(afterRole)) {
+      return { ok: false, reason: "대상 이틀의 앞뒤에 N/W가 있어 연속 패턴이 생길 수 있습니다." };
     }
 
     for (const date of swapDates) {
@@ -2568,7 +2560,7 @@
 
   function getNightWakeHighlightKeys(employeeId, date, role) {
     const normalized = String(role || "").trim().toUpperCase();
-    if (!["N", "W", "XS"].includes(normalized)) return [keyOf(employeeId, date)];
+    if (!["N", "W"].includes(normalized)) return [keyOf(employeeId, date)];
     const linkedStart = getLinkedNightStandbyStart(employeeId, date, normalized);
     const dates = linkedStart ? getNWSetDates(linkedStart) : getRoleEditTargets(employeeId, date);
     return dates.map(targetDate => keyOf(employeeId, targetDate));
@@ -2615,8 +2607,8 @@
     const day = parseIsoDate(date);
     if (!day || d < 0) return false;
 
-    if (["N", "W", "XS"].includes(normalized) && pools.nw.length && !employee.nwPool) return false;
-    if (["N", "W", "XS"].includes(normalized) && employee.group === "파견직") return false;
+    if (["N", "W"].includes(normalized) && pools.nw.length && !employee.nwPool) return false;
+    if (["N", "W"].includes(normalized) && employee.group === "파견직") return false;
     if (normalized === "H" && pools.h.length && !employee.hPool) return false;
     if (normalized === "D" && pools.d.length && !employee.dPool) return false;
     if (normalized === "P" && pools.p.length && !employee.pPool) return false;
@@ -2649,27 +2641,15 @@
     if (role === "N") {
       const visible = [date];
       const nextDate = toIsoDate(addDays(parsedDate, 1));
-      const standbyDate = toIsoDate(addDays(parsedDate, 2));
       if (isDateInSchedule(nextDate) && getRole(employeeId, nextDate) === "W") visible.push(nextDate);
-      if (isDateInSchedule(standbyDate) && getRole(employeeId, standbyDate) === "XS") visible.push(standbyDate);
       return visible;
     }
     if (role === "W") {
       const prevDate = toIsoDate(addDays(parsedDate, -1));
-      const nextDate = toIsoDate(addDays(parsedDate, 1));
       const visible = [];
       if (isDateInSchedule(prevDate) && getRole(employeeId, prevDate) === "N") visible.push(prevDate);
       visible.push(date);
-      if (isDateInSchedule(nextDate) && getRole(employeeId, nextDate) === "XS") visible.push(nextDate);
       return visible;
-    }
-    if (role === "XS") {
-      const nightDate = toIsoDate(addDays(parsedDate, -2));
-      const wakeDate = toIsoDate(addDays(parsedDate, -1));
-      if (isDateInSchedule(nightDate) && isDateInSchedule(wakeDate)
-        && getRole(employeeId, nightDate) === "N" && getRole(employeeId, wakeDate) === "W") {
-        return [nightDate, wakeDate, date];
-      }
     }
     return [date];
   }
@@ -2685,8 +2665,7 @@
     if ((normalized === "NW" || normalized === "N") && parsedDate) {
       return [
         { date, role: "N" },
-        { date: toIsoDate(addDays(parsedDate, 1)), role: "W" },
-        { date: toIsoDate(addDays(parsedDate, 2)), role: "XS" }
+        { date: toIsoDate(addDays(parsedDate, 1)), role: "W" }
       ].filter(target => isDateInSchedule(target.date));
     }
     return getRoleEditTargets(employeeId, date).map(targetDate => ({
@@ -2736,7 +2715,7 @@
           targetCell.classList.add("drop-candidate");
           markEmployeeHead(targetCell.dataset.employeeId, "drop-candidate-row");
           targetCell.title = payload.bundle?.kind === "NW"
-            ? ["N/W/Xs 담당자 교체 가능", "함께 바뀌는 W", "함께 바뀌는 Xs"][index]
+            ? ["N/W 담당자 교체 가능", "함께 바뀌는 W"][index]
             : "교환 가능";
         });
       } else {
@@ -2745,7 +2724,7 @@
           : [cell];
         blockedCells.forEach(targetCell => {
           targetCell.classList.add("drop-dimmed");
-          targetCell.title = `N/W/Xs 담당자 교체 불가: ${result.reason}`;
+          targetCell.title = `N/W 담당자 교체 불가: ${result.reason}`;
         });
       }
     });
@@ -2848,7 +2827,7 @@
     getSourcePreviewCells(payload).forEach(cell => {
       cell.classList.remove("drop-dimmed", "drop-candidate");
       cell.classList.add("drag-source");
-      cell.title = payload.bundle?.kind === "NW" ? "담당자를 바꿀 원본 N/W/Xs" : "현재 들고 있는 원본 셀";
+      cell.title = payload.bundle?.kind === "NW" ? "담당자를 바꿀 원본 N/W" : "현재 들고 있는 원본 셀";
     });
     markEmployeeHead(payload.employeeId, "drag-source-row");
   }
@@ -2939,7 +2918,8 @@
 
     [
       ["", "비우기"],
-      ["NW", "N/W/Xs 지정"],
+      ["NW", "N/W 지정"],
+      ["XS", "Xs 지정"],
       ["S", "S 지정"],
       ["SS", "Ss 지정"],
       ["E", "E 지정"],
@@ -3155,7 +3135,7 @@
           ? stateFromBackupCsv(rows)
           : stateFromLegacyScheduleCsv(rows);
         pushHistory("CSV 가져오기");
-        state = migrateStandaloneXs(importedState);
+        state = migrateSavedState(importedState);
         latestIssues = validateSchedule();
         refreshEmployeeSeed();
         syncInputs();
@@ -3570,20 +3550,15 @@
     return -1;
   }
 
-  function validateNightStandbySequences(days, issues) {
+  function validateNightWakeSequences(days, issues) {
     const added = new Set();
     state.employees.forEach(employee => {
       for (let d = 0; d < days.length; d++) {
         const role = getBoundaryScheduleRole(employee, days, d);
         if (role === "N") {
           checkExpected(d + 1, "W", d, "N 다음 날은 W여야 합니다.");
-          checkExpected(d + 2, "XS", d, "N 다음 2일은 Xs여야 합니다.");
         } else if (role === "W") {
           checkExpected(d - 1, "N", d, "W 전날은 N이어야 합니다.");
-          checkExpected(d + 1, "XS", d, "W 다음 날은 Xs여야 합니다.");
-        } else if (role === "XS") {
-          checkExpected(d - 1, "W", d, "Xs 전날은 W여야 합니다.");
-          checkExpected(d - 2, "N", d, "Xs 전 2일은 N이어야 합니다.");
         }
       }
 
@@ -3596,7 +3571,7 @@
         if (added.has(signature)) return;
         added.add(signature);
         issues.push({
-          title: "N/W/Xs 세트 위반",
+          title: "N/W 세트 위반",
           message: `${employee.name} ${dateKey}: ${detail} 현재 ${actualRole || "공란"}입니다.`,
           empId: employee.id,
           date: dateKey
@@ -3609,11 +3584,6 @@
     if (d < 0) return d >= -4 ? employee.past?.[4 + d] || "" : "";
     if (d >= days.length) return null;
     return getRole(employee.id, toIsoDate(days[d]));
-  }
-
-  function isLinkedNightStandbyXs(employee, days, d) {
-    return getBoundaryScheduleRole(employee, days, d - 1) === "W"
-      && getBoundaryScheduleRole(employee, days, d - 2) === "N";
   }
 
   function validateNightWakeAlternation(days, issues) {
@@ -3810,7 +3780,7 @@
   }
 
   function getRoleLabel(role) {
-    if (role === "NW") return "NWXs";
+    if (role === "NW") return "NW";
     return ROLE_DEFS[role]?.name || role || "";
   }
 
@@ -4053,38 +4023,9 @@
     employeeSeed = Math.max(100, ...state.employees.map(emp => parseInt(String(emp.id).replace(/\D/g, ""), 10) || 0)) + 1;
   }
 
-  function migrateStandaloneXs(savedState) {
-    const start = parseIsoDate(savedState?.config?.startDate);
-    const end = parseIsoDate(savedState?.config?.endDate);
-    if (!start || !end || end < start) return savedState;
-
-    const totalDays = Math.round((end - start) / 86400000) + 1;
+  function migrateSavedState(savedState) {
     savedState.schedule ||= {};
     savedState.manual ||= {};
-
-    const storedRole = (employee, d) => {
-      if (d < 0) return d >= -4 ? employee.past?.[4 + d] || "" : "";
-      if (d >= totalDays) return "";
-      const dateKey = toIsoDate(addDays(start, d));
-      return savedState.schedule[employee.id]?.[dateKey] || "";
-    };
-
-    savedState.employees.forEach(employee => {
-      const employeeSchedule = savedState.schedule[employee.id];
-      if (!employeeSchedule) return;
-
-      Object.entries(employeeSchedule).forEach(([dateKey, role]) => {
-        if (String(role || "").trim().toUpperCase() !== "XS") return;
-        const date = parseIsoDate(dateKey);
-        if (!date) return;
-        const d = Math.round((date - start) / 86400000);
-        if (d < 0 || d >= totalDays) return;
-        if (storedRole(employee, d - 1) === "W" && storedRole(employee, d - 2) === "N") return;
-
-        employeeSchedule[dateKey] = "R";
-        delete savedState.manual[keyOf(employee.id, dateKey)];
-      });
-    });
 
     Object.keys(savedState.manual).forEach(key => {
       const [employeeId, dateKey] = key.split("|");
@@ -4120,7 +4061,7 @@
         employee.mPool = Boolean(employee.mPool);
         employee.mStandby = Boolean(employee.mStandby);
       });
-      return migrateStandaloneXs(parsed);
+      return migrateSavedState(parsed);
     } catch {
       return null;
     }
