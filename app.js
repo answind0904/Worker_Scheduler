@@ -964,6 +964,7 @@
     relieveMCoreWithStandby(data, days, employees);
     forceExactTargetOff(data, days, employees);
     prioritizeDBySeniorityScore(data, days, employees);
+    repairExcessOffByTransfers(data, days, employees);
     assignFinalStandbyRoles(data, days, employees);
     writeDataToState(data, days, employees);
     showNotice("자동 생성이 끝났습니다. 검증 탭에서 위반 항목을 확인할 수 있습니다.");
@@ -1946,6 +1947,85 @@
       }
 
       if (!changed) break;
+    }
+  }
+
+  function repairExcessOffByTransfers(data, days, employees) {
+    const targets = employees.map(getTargetOff);
+    const dates = days.map(toIsoDate);
+    const dayOrder = days.map((_, d) => d)
+      .sort((a, b) => Number(isRedDay(days[a])) - Number(isRedDay(days[b])) || a - b);
+    const editable = (i, d) => !state.manual[keyOf(employees[i].id, dates[d])];
+    // Each committed path removes one excess rest day. Bound both the number
+    // of transfers and the search work; failure must leave the schedule intact.
+    let remaining = data.reduce((sum, row, i) => sum + Math.max(0, countOff(row) - targets[i]), 0);
+    while (remaining > 0) {
+      let improved = false;
+      const roots = employees.map((_, i) => i)
+        .filter(i => countOff(data[i]) > targets[i])
+        .sort((a, b) => (countOff(data[b]) - targets[b]) - (countOff(data[a]) - targets[a]) || a - b);
+      const budgets = new Map(roots.map(root => [root, { left: 4000 }]));
+      // Prefer the shortest available repair across all employees before
+      // searching longer chains through employees already at their rest target.
+      for (let depth = 0; depth <= 3; depth++) {
+        for (const root of roots) {
+          if (transfer(root, depth, new Set([root]), budgets.get(root))) {
+            improved = true;
+            remaining--;
+            break;
+          }
+        }
+        if (improved) break;
+      }
+      if (!improved) break;
+    }
+
+    function transfer(index, depth, visited, budget) {
+      for (const d of dayOrder) {
+        if (budget.left <= 0) return false;
+        if (data[index][d] !== "R" || !editable(index, d)) continue;
+        if (isAfterWake(data, employees, index, d)) continue;
+        if (data[index][d + 1] === "H") continue;
+        budget.left--;
+        // Check the newly joined streak only. An unrelated existing violation
+        // elsewhere in the month must not prevent an otherwise safe repair.
+        if (getStreakLength(data, employees[index], index, d) > state.config.maxConsecutive) continue;
+        const keepsStandbyCandidate = employees[index].group === "파견직"
+          || data.some(row => row[d] === "XS")
+          || employees.some((employee, i) => i !== index && employee.group !== "파견직"
+            && data[i][d] === "R" && editable(i, d));
+        if (keepsStandbyCandidate && canChangeWeekendStaffing(data, employees, days[d], d, [{ index, role: "S" }])) {
+          data[index][d] = "S";
+          return true;
+        }
+        if (depth === 0) continue;
+        const replacements = employees.map((_, i) => i)
+          .filter(i => !visited.has(i) && data[i][d] === "S" && editable(i, d))
+          .sort((a, b) => (countOff(data[a]) - targets[a]) - (countOff(data[b]) - targets[b]) || a - b);
+        for (const replacement of replacements) {
+          if (budget.left <= 0) return false;
+          if (!canChangeWeekendStaffing(data, employees, days[d], d, [
+            { index, role: "S" }, { index: replacement, role: "R" }
+          ])) continue;
+          if (!keepsStandbyCandidate && employees[replacement].group === "파견직") continue;
+          data[index][d] = "S";
+          data[replacement][d] = "R";
+          visited.add(replacement);
+          let committed = false;
+          try {
+            committed = countOff(data[replacement]) <= targets[replacement]
+              || transfer(replacement, depth - 1, visited, budget);
+            if (committed) return true;
+          } finally {
+            visited.delete(replacement);
+            if (!committed) {
+              data[index][d] = "R";
+              data[replacement][d] = "S";
+            }
+          }
+        }
+      }
+      return false;
     }
   }
 

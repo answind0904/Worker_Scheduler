@@ -17,7 +17,7 @@ function engine(groups, config = {}) {
     globalThis.api = {
       state, createEmployee, generateSchedule, validateSchedule, getScheduleDays,
       fillRedDay, forceExactTargetOff, findRestSwap, findMRepairCandidate,
-      enforceMaxConsecutive, writeDataToState, countOff
+      enforceMaxConsecutive, writeDataToState, countOff, repairExcessOffByTransfers
     };
   })();`), context);
   const api = context.api;
@@ -116,6 +116,88 @@ test('manual over-capacity stays protected and is reported without further addit
   assert.deepEqual(roles.slice(0, 4), ['S', 'S', 'S', 'S']);
   assert.equal(roles[4], 'R');
   assert.ok(api.validateSchedule().some(issue => issue.title === '토/일 파견직 출근 초과'));
+});
+
+function transferFixture() {
+  const api = engine(['일반직', '전문직', '일반직'], {
+    startDate: '2026-10-10', endDate: '2026-10-12', targetOffDays: 1, fridayDs: 1
+  });
+  const data = [['R', 'X', 'S'], ['S', 'S', 'R'], ['A', 'A', 'XS']];
+  return { api, data, days: api.getScheduleDays(), employees: api.state.employees };
+}
+
+test('two-date transfer reduces excess without changing the relay employee rest target', () => {
+  const { api, data, days, employees } = transferFixture();
+  api.repairExcessOffByTransfers(data, days, employees);
+  assert.deepEqual(data, [['S', 'X', 'S'], ['R', 'S', 'S'], ['A', 'A', 'XS']]);
+  assert.equal(api.countOff(data[0]), 1);
+  assert.equal(api.countOff(data[1]), 1);
+});
+
+test('three-person chain joins two full weekend dates to a weekday vacancy', () => {
+  const api = engine(Array(4).fill('일반직'), {
+    startDate: '2026-10-10', endDate: '2026-10-12', targetOffDays: 1, fridayDs: 1
+  });
+  const data = [['R', 'X', 'S'], ['S', 'R', 'S'], ['A', 'S', 'R'], ['A', 'A', 'XS']];
+  api.repairExcessOffByTransfers(data, api.getScheduleDays(), api.state.employees);
+  assert.deepEqual(data, [['S', 'X', 'S'], ['R', 'S', 'S'], ['A', 'R', 'S'], ['A', 'A', 'XS']]);
+});
+
+test('failed transfer rolls back all cells and preserves manual work/rest and X', () => {
+  for (const [index, date] of [[0, '2026-10-10'], [1, '2026-10-10'], [1, '2026-10-12']]) {
+    const { api, data, days, employees } = transferFixture();
+    api.state.manual[employees[index].id + '|' + date] = true;
+    const before = JSON.stringify(data);
+    api.repairExcessOffByTransfers(data, days, employees);
+    assert.equal(JSON.stringify(data), before);
+  }
+  const { api, data, days, employees } = transferFixture();
+  data[1][2] = 'X';
+  const before = JSON.stringify(data);
+  api.repairExcessOffByTransfers(data, days, employees);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test('transfer respects W continuation, H protection and newly joined work streaks', () => {
+  for (const constraint of ['wake', 'nextH', 'streak']) {
+    const { api, data, days, employees } = transferFixture();
+    if (constraint === 'wake') employees[0].past[3] = 'W';
+    if (constraint === 'nextH') { data[1].push('H'); days.push(new Date(2026, 9, 13)); data[0].push('S'); data[2].push('A'); }
+    if (constraint === 'streak') employees[0].past = ['S', 'S', 'S', 'S'];
+    if (constraint === 'streak') api.state.config.maxConsecutive = 4;
+    const before = JSON.stringify(data);
+    api.repairExcessOffByTransfers(data, days, employees);
+    assert.equal(JSON.stringify(data), before, constraint);
+  }
+});
+
+test('an unrelated existing streak does not block a safe later weekday repair', () => {
+  const api = engine(['일반직', '일반직'], {
+    startDate: '2026-10-01', endDate: '2026-10-12', targetOffDays: 4
+  });
+  const data = [['S', 'S', 'S', 'S', 'S', 'S', 'S', 'R', 'R', 'R', 'R', 'R']];
+  data.push(Array(12).fill('XS'));
+  api.repairExcessOffByTransfers(data, api.getScheduleDays(), api.state.employees);
+  assert.equal(api.countOff(data[0]), 4);
+  assert.deepEqual(data[0].slice(0, 8), ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'R']);
+});
+
+test('cross-group transfers cannot consume dispatch weekend quota', () => {
+  const api = engine(['일반직', '파견직', '파견직', '파견직'], {
+    startDate: '2026-10-10', endDate: '2026-10-12', targetOffDays: 1, fridayDs: 0
+  });
+  const data = [['R', 'X', 'S'], ['S', 'S', 'R'], ['S', 'S', 'X'], ['S', 'X', 'S']];
+  const before = JSON.stringify(data);
+  api.repairExcessOffByTransfers(data, api.getScheduleDays(), api.state.employees);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test('transfer does not remove the last available Xs candidate', () => {
+  const { api, data, days, employees } = transferFixture();
+  data[2][2] = 'A';
+  const before = JSON.stringify(data);
+  api.repairExcessOffByTransfers(data, days, employees);
+  assert.equal(JSON.stringify(data), before);
 });
 
 test('monthly generation preserves quotas, X and manual R over multiple seeds', () => {
