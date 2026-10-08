@@ -903,7 +903,6 @@
     for (let d = 0; d < days.length; d++) {
       const day = days[d];
       const redDay = isRedDay(day);
-      const sunday = day.getDay() === 0;
       const monToThu = day.getDay() >= 1 && day.getDay() <= 4;
       const pools = getPools();
 
@@ -932,7 +931,7 @@
       assignRole(dayContext, pools.p.length ? pools.p : pools.standard, "P", redDay || hasRoleOnDay(data, d, "P"));
 
       if (redDay) {
-        fillRedDay(data, d, employees, assignedByDay[d], restCounts, workCounts, consecutive, day, sunday);
+        fillRedDay(data, d, employees, assignedByDay[d], restCounts, workCounts, consecutive, day);
       } else {
         for (let i = 0; i < employees.length; i++) {
           if (!assignedByDay[d].has(i) && consecutive[i] >= state.config.maxConsecutive) {
@@ -1426,6 +1425,7 @@
   function isEligibleForRole(data, days, employees, idx, d, role, streak, relaxed = false) {
     const employee = employees[idx];
     const pools = getPools();
+    if (!canChangeWeekendStaffing(data, employees, days[d], d, [{ index: idx, role }])) return false;
     if (role === "N" && employee.group === "파견직") return false;
     if (role === "N" && pools.nw.length && !employee.nwPool) return false;
     if (role === "N" && !pools.nw.length && employee.group === "파견직") return false;
@@ -1452,10 +1452,10 @@
     return true;
   }
 
-  function fillRedDay(data, d, employees, assigned, restCounts, workCounts, consecutive, day, sunday) {
+  function fillRedDay(data, d, employees, assigned, restCounts, workCounts, consecutive, day) {
     const currentGeneralDs = countGeneralDs(data, employees, d);
     const standardNeed = isWeekend(day) ? Math.max(0, state.config.fridayDs - currentGeneralDs) : 1;
-    const dispatchNeed = sunday ? 2 : 3;
+    const dispatchNeed = Math.max(0, getDispatchDayTarget(day) - countDispatchWorkers(data, employees, d));
     const pools = getPools();
     selectRedDayWorkers(pools.standard, standardNeed);
     selectRedDayWorkers(pools.dispatch, dispatchNeed);
@@ -1648,11 +1648,12 @@
   function canRemoveNormalWork(data, days, employees, employeeIndex, d) {
     if (data[employeeIndex][d] !== "S") return false;
     if (!isRedDay(days[d]) && countDayActive(data, d) <= state.config.minActive) return false;
-    if (wouldBreakWeekendGeneral(data, employees, days[d], d, employeeIndex)) return false;
+    if (wouldBreakWeekendStaffing(data, employees, days[d], d, employeeIndex)) return false;
     return true;
   }
 
   function canAddNormalWork(data, days, employees, employeeIndex, d, role) {
+    if (!canChangeWeekendStaffing(data, employees, days[d], d, [{ index: employeeIndex, role }])) return false;
     if (isAfterWake(data, employees, employeeIndex, d)) return false;
     if (d + 1 < days.length && data[employeeIndex][d + 1] === "H") return false;
     return !wouldViolateConsecutive(data, employees[employeeIndex], employeeIndex, d, role);
@@ -1661,7 +1662,7 @@
   function countGeneralDs(data, employees, d) {
     let count = 0;
     for (let i = 0; i < employees.length; i++) {
-      if (employees[i].group !== "파견직" && ["D", "S"].includes(data[i][d])) count++;
+      if (employees[i].group !== "파견직" && isGeneralDsRole(data[i][d])) count++;
     }
     return count;
   }
@@ -1674,8 +1675,9 @@
         const candidates = [];
         for (let d = 0; d < days.length; d++) {
           if (data[i][d] !== "S" || isRedDay(days[d])) continue;
+          if (state.manual[keyOf(employee.id, toIsoDate(days[d]))]) continue;
           if (countDayActive(data, d) <= state.config.minActive) continue;
-          if (wouldBreakWeekendGeneral(data, employees, days[d], d, i)) continue;
+          if (wouldBreakWeekendStaffing(data, employees, days[d], d, i)) continue;
           candidates.push({ d, score: countDayActive(data, d) * 20 + getStreakLength(data, employees[i], i, d) });
         }
         candidates.sort((a, b) => b.score - a.score);
@@ -1688,6 +1690,7 @@
         const candidates = [];
         for (let d = 0; d < days.length && need < 0; d++) {
           if (data[i][d] !== "R" || isRedDay(days[d])) continue;
+          if (state.manual[keyOf(employee.id, toIsoDate(days[d]))]) continue;
           if (wouldViolateConsecutive(data, employees[i], i, d, "S")) continue;
           if (isAfterWake(data, employees, i, d)) continue;
           const priority = 0;
@@ -1735,8 +1738,8 @@
       const role = data[victimIndex][d];
       if (!canTradeRoleForRest(role)) continue;
       if (state.manual[keyOf(employees[victimIndex].id, toIsoDate(days[d]))]) continue;
-      if (role === "S" && !isRedDay(days[d]) && countDayActive(data, d) <= state.config.minActive) continue;
-      if (role === "S" && wouldBreakWeekendGeneral(data, employees, days[d], d, victimIndex)) continue;
+      // Evaluate the complete swap below: removing S alone would reject a safe
+      // same-group replacement when the day is exactly at its staffing target.
       const score = getRestSwapDayScore(data, employees, victimIndex, d, role);
       candidates.push({ d, role, score });
     }
@@ -1748,6 +1751,9 @@
         .filter(item => item.index !== victimIndex && item.surplus > 0)
         .filter(item => data[item.index][candidate.d] === "R")
         .filter(item => canDonorTakeRole(data, days, employees, item.index, candidate.d, candidate.role))
+        .filter(item => canChangeWeekendStaffing(data, employees, days[candidate.d], candidate.d, [
+          { index: victimIndex, role: "R" }, { index: item.index, role: candidate.role }
+        ]))
         .sort((a, b) => {
           if (b.surplus !== a.surplus) return b.surplus - a.surplus;
           return countCritical(data, a.index, candidate.d) - countCritical(data, b.index, candidate.d);
@@ -1840,6 +1846,9 @@
         .filter(index => isManualRoleAllowed(employees[index].id, dateKey, role))
         .filter(index => !wouldViolateConsecutive(data, employees[index], index, d, role))
         .filter(index => canUseStandbyForMTransfer(data, days, employees, index, d, restCounts, targets))
+        .filter(index => canChangeWeekendStaffing(data, employees, days[d], d, [
+          { index: victimIndex, role: "R" }, { index, role }
+        ]))
         .map(index => ({
           index,
           score: getMStandbyTransferScore(data, days, employees, index, d, role, restCounts, targets)
@@ -1947,6 +1956,7 @@
       const dateKey = toIsoDate(days[d]);
       if (state.manual[keyOf(employees[employeeIndex].id, dateKey)]) continue;
       if (!canForceRoleToRest(role)) continue;
+      if (!canChangeWeekendStaffing(data, employees, days[d], d, [{ index: employeeIndex, role: "R" }])) continue;
 
       let score = 0;
       if (role === "S") score += 120;
@@ -1957,7 +1967,6 @@
       if (isAfterWake(data, employees, employeeIndex, d)) score += 80;
       score += getStreakLength(data, employees[employeeIndex], employeeIndex, d) * 10;
       if (!isRedDay(days[d]) && countDayActive(data, d) <= state.config.minActive) score -= 180;
-      if (wouldBreakWeekendGeneral(data, employees, days[d], d, employeeIndex)) score -= 220;
       if (["D", "H", "P"].includes(role)) score -= 260;
 
       candidates.push({ d, score });
@@ -1998,11 +2007,12 @@
       const dateKey = toIsoDate(days[d]);
       if (data[employeeIndex][d] !== "R") continue;
       if (state.manual[keyOf(employees[employeeIndex].id, dateKey)]) continue;
+      if (!canChangeWeekendStaffing(data, employees, days[d], d, [{ index: employeeIndex, role: "S" }])) continue;
       if (isAfterWake(data, employees, employeeIndex, d)) continue;
       if (!options.allowConsecutiveRisk && wouldViolateConsecutive(data, employees[employeeIndex], employeeIndex, d, "S")) continue;
 
       let score = 100;
-      if (isRedDay(days[d])) score += 20;
+      if (!isRedDay(days[d])) score += 20;
       if (isAfterWake(data, employees, employeeIndex, d)) score -= 80;
       if (wouldViolateConsecutive(data, employees[employeeIndex], employeeIndex, d, "S")) score -= 120;
       candidates.push({ d, score });
@@ -2045,6 +2055,7 @@
         .filter(index => !state.manual[keyOf(employees[index].id, dateKey)])
         .filter(index => isManualRoleAllowed(employees[index].id, dateKey, role))
         .filter(index => !wouldViolateConsecutive(data, employees[index], index, d, role))
+        .filter(index => canChangeWeekendStaffing(data, employees, days[d], d, [{ index, role }]))
         .map(index => ({
           index,
           score: getMRepairScore(data, employees, index, d, role)
@@ -2085,8 +2096,10 @@
             streak++;
             streakDays.push(d);
             if (streak > state.config.maxConsecutive) {
-              const target = streakDays.find(day => data[i][day] === "S");
-              if (target !== undefined && !wouldBreakWeekendGeneral(data, employees, days[target], target, i)) {
+              const target = streakDays.find(day => data[i][day] === "S"
+                && !state.manual[keyOf(employees[i].id, toIsoDate(days[day]))]
+                && canChangeWeekendStaffing(data, employees, days[day], day, [{ index: i, role: "R" }]));
+              if (target !== undefined) {
                 data[i][target] = "R";
                 changed = true;
                 break;
@@ -2127,8 +2140,16 @@
       }
       if (isWeekend(day)) {
         const generalDs = state.employees.filter(emp => emp.group !== "파견직")
-          .reduce((sum, emp) => sum + (["D", "S"].includes(getRole(emp.id, dateKey)) ? 1 : 0), 0);
+          .reduce((sum, emp) => sum + (isGeneralDsRole(getRole(emp.id, dateKey)) ? 1 : 0), 0);
         if (generalDs < state.config.fridayDs) addDayIssue("토/일 D+S 부족", `${dateKey}: 일반/전문직 D+S ${generalDs}명, 기준 ${state.config.fridayDs}명`, dateKey);
+        if (generalDs > state.config.fridayDs) addDayIssue("토/일 D+S 초과", `${dateKey}: 일반/전문직 D+S ${generalDs}명, 정원 ${state.config.fridayDs}명`, dateKey);
+        const dispatchWorkers = state.employees.filter(emp => emp.group === "파견직")
+          .reduce((sum, emp) => sum + (isDispatchWorkRole(getRole(emp.id, dateKey)) ? 1 : 0), 0);
+        const dispatchTarget = getDispatchDayTarget(day);
+        if (dispatchWorkers !== dispatchTarget) {
+          const kind = dispatchWorkers < dispatchTarget ? "부족" : "초과";
+          addDayIssue(`토/일 파견직 출근 ${kind}`, `${dateKey}: 파견직 출근 ${dispatchWorkers}명, 정원 ${dispatchTarget}명`, dateKey);
+        }
       }
       checkExpectedRole("N", 1);
       checkExpectedRole("D", 1);
@@ -3742,14 +3763,40 @@
     return violated;
   }
 
-  function wouldBreakWeekendGeneral(data, employees, day, d, employeeIndexToRest) {
-    if (!isWeekend(day) || employees[employeeIndexToRest].group === "파견직") return false;
-    let count = 0;
-    for (let i = 0; i < employees.length; i++) {
-      if (i === employeeIndexToRest) continue;
-      if (employees[i].group !== "파견직" && ["D", "S"].includes(data[i][d])) count++;
+  function wouldBreakWeekendStaffing(data, employees, day, d, employeeIndexToRest) {
+    return !canChangeWeekendStaffing(data, employees, day, d, [{ index: employeeIndexToRest, role: "R" }]);
+  }
+
+  function isGeneralDsRole(role) {
+    return ["D", "S", "SS"].includes(role);
+  }
+
+  function isDispatchWorkRole(role) {
+    return isWorkingRole(role) && role !== "W";
+  }
+
+  function getDispatchDayTarget(day) {
+    return day.getDay() === 0 ? 2 : 3;
+  }
+
+  function countDispatchWorkers(data, employees, d) {
+    return employees.reduce((count, employee, index) => count
+      + (employee.group === "파견직" && isDispatchWorkRole(data[index][d]) ? 1 : 0), 0);
+  }
+
+  function canChangeWeekendStaffing(data, employees, day, d, changes) {
+    if (!isWeekend(day)) return true;
+    const before = [countGeneralDs(data, employees, d), countDispatchWorkers(data, employees, d)];
+    const after = [...before];
+    const targets = [state.config.fridayDs, getDispatchDayTarget(day)];
+    for (const { index, role } of changes) {
+      const group = employees[index].group === "파견직" ? 1 : 0;
+      const countsAsWorker = group ? isDispatchWorkRole : isGeneralDsRole;
+      after[group] += Number(countsAsWorker(role)) - Number(countsAsWorker(data[index][d]));
     }
-    return count < state.config.fridayDs;
+    // Preserve exact quotas; existing manual excess/shortage may only improve.
+    return after.every((count, group) => count >= Math.min(before[group], targets[group])
+      && count <= Math.max(before[group], targets[group]));
   }
 
   function weekendFairnessScore(data, idx, currentDay) {
